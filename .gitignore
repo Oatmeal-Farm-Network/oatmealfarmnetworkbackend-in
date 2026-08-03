@@ -133,3 +133,7 @@ coverage.xml
 *.err
 *.out
 _uvicorn.*
+
+# Local Claude/Cursor worktrees
+.claude/worktrees/
+
