@@ -112,26 +112,66 @@ jobs:
           print("DB_SERVER length:", len(pairs["DB_SERVER"]))
           PY
 
-      - name: Verify Cloud SQL network reachability
+      - name: Verify Cloud SQL is in asia-south1
+        env:
+          CLOUD_SQL_INSTANCE: ${{ secrets.CLOUD_SQL_INSTANCE }}
         run: |
           DB_HOST="${{ secrets.DB_SERVER }}"
           DB_PORT="${{ secrets.DB_PORT }}"
           DB_PORT="${DB_PORT:-1433}"
+          SQL_INSTANCE="${CLOUD_SQL_INSTANCE:-}"
+
           echo "Checking TCP ${DB_HOST}:${DB_PORT} from runner..."
           if command -v nc >/dev/null; then
             nc -zv -w 5 "$DB_HOST" "$DB_PORT" || echo "WARNING: nc probe failed (runner network != Cloud Run)"
           fi
-          # Re-assert public access for bring-up (no-op if already set). Needs cloudsql.admin.
-          gcloud sql instances patch oatmealaiindia \
+
+          echo "Resolving Cloud SQL region for DB_SERVER=$DB_HOST ..."
+          # Find which instance owns this public IP and enforce asia-south1 only.
+          MAP="$(gcloud sql instances list --project="$PROJECT_ID" \
+            --format='csv[no-heading](name,region,ipAddresses[0].ipAddress)' 2>/dev/null || true)"
+          echo "$MAP"
+          MATCH_REGION=""
+          MATCH_NAME=""
+          while IFS=',' read -r name region ip; do
+            [ -z "$name" ] && continue
+            if [ "$ip" = "$DB_HOST" ]; then
+              MATCH_NAME="$name"
+              MATCH_REGION="$region"
+            fi
+          done <<< "$MAP"
+
+          if [ -z "$MATCH_REGION" ] && [ -n "$SQL_INSTANCE" ]; then
+            MATCH_NAME="$SQL_INSTANCE"
+            MATCH_REGION="$(gcloud sql instances describe "$SQL_INSTANCE" --project="$PROJECT_ID" --format='value(region)' 2>/dev/null || true)"
+          fi
+
+          if [ -z "$MATCH_REGION" ]; then
+            echo "ERROR: Could not map DB_SERVER=$DB_HOST to a Cloud SQL instance in project $PROJECT_ID."
+            echo "Create India SQL in asia-south1: bash scripts/create-india-sql.sh"
+            echo "Then set DB_SERVER to that instance public IP."
+            exit 1
+          fi
+
+          echo "DB_SERVER maps to instance=$MATCH_NAME region=$MATCH_REGION"
+          if [ "$MATCH_REGION" != "asia-south1" ]; then
+            echo "ERROR: India backend must use Cloud SQL in asia-south1 (found $MATCH_REGION)."
+            echo "Do not use us-central1. Run: bash scripts/create-india-sql.sh"
+            echo "Then update GitHub secrets DB_SERVER (+ CLOUD_SQL_INSTANCE) and redeploy."
+            exit 1
+          fi
+
+          gcloud sql instances describe "$MATCH_NAME" \
+            --project="$PROJECT_ID" \
+            --format='yaml(region,databaseVersion,state,ipAddresses,settings.ipConfiguration.authorizedNetworks)' \
+            || true
+
+          gcloud sql instances patch "$MATCH_NAME" \
             --project="$PROJECT_ID" \
             --authorized-networks=0.0.0.0/0 \
             --quiet \
-            && echo "Authorized networks set to 0.0.0.0/0" \
+            && echo "Authorized networks set to 0.0.0.0/0 on $MATCH_NAME" \
             || echo "WARNING: could not patch authorized networks (missing cloudsql.admin?)"
-          gcloud sql instances describe oatmealaiindia \
-            --project="$PROJECT_ID" \
-            --format='yaml(databaseVersion,state,ipAddresses,settings.ipConfiguration.authorizedNetworks)' \
-            || true
 
       - name: Deploy to Cloud Run
         run: |
