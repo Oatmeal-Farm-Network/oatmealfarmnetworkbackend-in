@@ -168,13 +168,26 @@ ALLOWED_ORIGINS = [
     "https://lkm-frontend-mt7mh6zhoa-uc.a.run.app",
     "https://www.lkmcpa.com", "https://lkmcpa.com",
     "https://www.islandcpas.com", "https://islandcpas.com",
+    # India Cloud Run (both URL formats)
+    "https://oatmealfarmnetwork-in-qamcakkjnq-el.a.run.app",
+    "https://oatmealfarmnetwork-in-151683070823.asia-south1.run.app",
 ]
+
+# FRONTEND_URL may be a single origin or comma-separated list (set by Cloud Run deploy).
+for _fe in (os.getenv("FRONTEND_URL") or "").split(","):
+    _fe = _fe.strip().rstrip("/")
+    if _fe and _fe not in ALLOWED_ORIGINS:
+        ALLOWED_ORIGINS.append(_fe)
 
 def _is_allowed_origin(origin: str) -> bool:
     """Return True if origin is in the static list or matches a registered custom domain in the DB."""
     if not origin:
         return False
+    origin = origin.rstrip("/")
     if origin in ALLOWED_ORIGINS:
+        return True
+    # India/USA Cloud Run frontend hosts for this product
+    if origin.endswith(".run.app") and "oatmealfarmnetwork-in" in origin:
         return True
     if origin.startswith("https://"):
         try:
