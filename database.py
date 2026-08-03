@@ -13,6 +13,11 @@ SQLALCHEMY_DATABASE_URL = (
     f"@{os.getenv('DB_SERVER')}/{os.getenv('DB_NAME')}"
 )
 
+# Keep login short so Cloud Run can still bind PORT if DB is unreachable.
+# (Many routers open SessionLocal() at import time; long timeouts prevent startup.)
+_DB_LOGIN_TIMEOUT = int(os.getenv("DB_LOGIN_TIMEOUT", "3"))
+_DB_QUERY_TIMEOUT = int(os.getenv("DB_QUERY_TIMEOUT", "10"))
+
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
     echo=False,
@@ -20,7 +25,7 @@ engine = create_engine(
     pool_recycle=1800,    # recycle connections every 30 min; 60s was too short for idle dev sessions
     pool_size=5,
     max_overflow=10,
-    connect_args={"timeout": 30, "login_timeout": 15},  # 30s query / 15s login — handles cold starts
+    connect_args={"timeout": _DB_QUERY_TIMEOUT, "login_timeout": _DB_LOGIN_TIMEOUT},
 )
 
 # Declarative base
@@ -58,8 +63,8 @@ def get_db_cursor():
         user=os.getenv("DB_USER"),
         password=os.getenv("DB_PASSWORD"),
         database=os.getenv("DB_NAME"),
-        timeout=10,
-        login_timeout=10,
+        timeout=_DB_QUERY_TIMEOUT,
+        login_timeout=_DB_LOGIN_TIMEOUT,
     )
     return conn.cursor(as_dict=True)
 
@@ -70,8 +75,8 @@ def get_raw_conn():
         user=os.getenv("DB_USER"),
         password=os.getenv("DB_PASSWORD"),
         database=os.getenv("DB_NAME"),
-        timeout=30,
-        login_timeout=15,
+        timeout=_DB_QUERY_TIMEOUT,
+        login_timeout=_DB_LOGIN_TIMEOUT,
     )
     try:
         yield conn
