@@ -87,8 +87,8 @@ jobs:
             "DB_USER": os.environ["DB_USER"],
             "DB_PASSWORD": os.environ["DB_PASSWORD"],
             "DB_NAME": os.environ["DB_NAME"],
-            "DB_LOGIN_TIMEOUT": "3",
-            "DB_QUERY_TIMEOUT": "10",
+            "DB_LOGIN_TIMEOUT": "30",
+            "DB_QUERY_TIMEOUT": "60",
           }
           optional = [
             "GOOGLE_API_KEY", "GEMINI_MODEL", "VERTEX_AI_MODEL",
@@ -111,6 +111,27 @@ jobs:
           print("Wrote cloudrun-env.yaml with keys:", ", ".join(pairs.keys()))
           print("DB_SERVER length:", len(pairs["DB_SERVER"]))
           PY
+
+      - name: Verify Cloud SQL network reachability
+        run: |
+          DB_HOST="${{ secrets.DB_SERVER }}"
+          DB_PORT="${{ secrets.DB_PORT }}"
+          DB_PORT="${DB_PORT:-1433}"
+          echo "Checking TCP ${DB_HOST}:${DB_PORT} from runner..."
+          if command -v nc >/dev/null; then
+            nc -zv -w 5 "$DB_HOST" "$DB_PORT" || echo "WARNING: nc probe failed (runner network != Cloud Run)"
+          fi
+          # Re-assert public access for bring-up (no-op if already set). Needs cloudsql.admin.
+          gcloud sql instances patch oatmealaiindia \
+            --project="$PROJECT_ID" \
+            --authorized-networks=0.0.0.0/0 \
+            --quiet \
+            && echo "Authorized networks set to 0.0.0.0/0" \
+            || echo "WARNING: could not patch authorized networks (missing cloudsql.admin?)"
+          gcloud sql instances describe oatmealaiindia \
+            --project="$PROJECT_ID" \
+            --format='yaml(databaseVersion,state,ipAddresses,settings.ipConfiguration.authorizedNetworks)' \
+            || true
 
       - name: Deploy to Cloud Run
         run: |

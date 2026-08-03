@@ -13,10 +13,10 @@ SQLALCHEMY_DATABASE_URL = (
     f"@{os.getenv('DB_SERVER')}/{os.getenv('DB_NAME')}"
 )
 
-# Keep login short so Cloud Run can still bind PORT if DB is unreachable.
-# (Many routers open SessionLocal() at import time; long timeouts prevent startup.)
-_DB_LOGIN_TIMEOUT = int(os.getenv("DB_LOGIN_TIMEOUT", "3"))
-_DB_QUERY_TIMEOUT = int(os.getenv("DB_QUERY_TIMEOUT", "10"))
+# Cross-region (asia-south1 Cloud Run -> us-central1 SQL) needs longer login.
+# USA defaults are 15/30; keep those unless overridden.
+_DB_LOGIN_TIMEOUT = int(os.getenv("DB_LOGIN_TIMEOUT", "15"))
+_DB_QUERY_TIMEOUT = int(os.getenv("DB_QUERY_TIMEOUT", "30"))
 
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,

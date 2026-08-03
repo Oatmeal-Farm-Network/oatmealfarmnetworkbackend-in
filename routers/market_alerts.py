@@ -15,25 +15,28 @@ from datetime import datetime
 router = APIRouter(prefix="/api/market-alerts", tags=["market_alerts"])
 
 # ── Auto-create table ────────────────────────────────────────────────────────
-with engine.begin() as _conn:
-    _conn.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='MarketAlerts')
-        BEGIN
-            CREATE TABLE MarketAlerts (
-                AlertID          INT IDENTITY(1,1) PRIMARY KEY,
-                PeopleID         INT          NOT NULL,
-                Commodity        VARCHAR(80)  NOT NULL,
-                Direction        VARCHAR(10)  NOT NULL,
-                ThresholdPrice   DECIMAL(12,4) NOT NULL,
-                Unit             VARCHAR(20)  NULL,
-                LastNotifiedAt   DATETIME     NULL,
-                LastCheckedPrice DECIMAL(12,4) NULL,
-                CreatedAt        DATETIME     NOT NULL DEFAULT GETDATE()
-            )
-            CREATE INDEX IX_MarketAlerts_Person
-                ON MarketAlerts (PeopleID, CreatedAt DESC)
-        END
-    """))
+try:
+    with engine.begin() as _conn:
+        _conn.execute(text("""
+            IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='MarketAlerts')
+            BEGIN
+                CREATE TABLE MarketAlerts (
+                    AlertID          INT IDENTITY(1,1) PRIMARY KEY,
+                    PeopleID         INT          NOT NULL,
+                    Commodity        VARCHAR(80)  NOT NULL,
+                    Direction        VARCHAR(10)  NOT NULL,
+                    ThresholdPrice   DECIMAL(12,4) NOT NULL,
+                    Unit             VARCHAR(20)  NULL,
+                    LastNotifiedAt   DATETIME     NULL,
+                    LastCheckedPrice DECIMAL(12,4) NULL,
+                    CreatedAt        DATETIME     NOT NULL DEFAULT GETDATE()
+                )
+                CREATE INDEX IX_MarketAlerts_Person
+                    ON MarketAlerts (PeopleID, CreatedAt DESC)
+            END
+        """))
+except Exception as _e:
+    print(f"MarketAlerts table setup error: {_e}")
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
