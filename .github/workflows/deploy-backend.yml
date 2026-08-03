@@ -69,6 +69,31 @@ jobs:
         run: |
           IMAGE=$REGION-docker.pkg.dev/$PROJECT_ID/$GAR_REPOSITORY/$SERVICE_NAME:$GITHUB_SHA
           FE_URL="${FRONTEND_URL:-https://placeholder.invalid}"
+
+          # Build env var list; skip empty secrets so deploy does not inject blanks
+          ENV_VARS="FRONTEND_URL=$FE_URL||GOOGLE_CLOUD_PROJECT=$PROJECT_ID||GOOGLE_CLOUD_LOCATION=$REGION"
+          for pair in \
+            "GOOGLE_API_KEY=$GOOGLE_API_KEY" \
+            "GEMINI_MODEL=$GEMINI_MODEL" \
+            "VERTEX_AI_MODEL=$VERTEX_AI_MODEL" \
+            "FIRESTORE_DATABASE=$FIRESTORE_DATABASE" \
+            "DB_TYPE=$DB_TYPE" \
+            "DB_SERVER=$DB_SERVER" \
+            "DB_PORT=$DB_PORT" \
+            "DB_USER=$DB_USER" \
+            "DB_PASSWORD=$DB_PASSWORD" \
+            "DB_NAME=$DB_NAME" \
+            "SECRET_KEY=$SECRET_KEY"
+          do
+            key="${pair%%=*}"
+            val="${pair#*=}"
+            if [ -n "$val" ]; then
+              ENV_VARS="$ENV_VARS||$key=$val"
+            else
+              echo "WARN: secret/env $key is empty — not setting on Cloud Run"
+            fi
+          done
+
           gcloud run deploy $SERVICE_NAME \
             --image $IMAGE \
             --region $REGION \
@@ -77,10 +102,12 @@ jobs:
             --port 8080 \
             --memory 1Gi \
             --cpu 1 \
+            --timeout 300 \
+            --cpu-boost \
             --min-instances 0 \
             --max-instances 10 \
             --project $PROJECT_ID \
-            --update-env-vars "^||^FRONTEND_URL=$FE_URL||GOOGLE_CLOUD_PROJECT=$PROJECT_ID||GOOGLE_CLOUD_LOCATION=$REGION||GOOGLE_API_KEY=$GOOGLE_API_KEY||GEMINI_MODEL=$GEMINI_MODEL||VERTEX_AI_MODEL=$VERTEX_AI_MODEL||FIRESTORE_DATABASE=$FIRESTORE_DATABASE||DB_TYPE=$DB_TYPE||DB_SERVER=$DB_SERVER||DB_PORT=$DB_PORT||DB_USER=$DB_USER||DB_PASSWORD=$DB_PASSWORD||DB_NAME=$DB_NAME||SECRET_KEY=$SECRET_KEY"
+            --update-env-vars "^||^$ENV_VARS"
 
       - name: Show deployed URL
         run: |
