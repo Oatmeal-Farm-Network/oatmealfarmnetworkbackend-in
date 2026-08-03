@@ -1,0 +1,97 @@
+name: Deploy Saige Backend (India) to Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "saige/**"
+      - ".github/workflows/deploy-saige.yml"
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
+  GAR_LOCATION: ${{ secrets.GOOGLE_CLOUD_LOCATION }}
+  GAR_REPOSITORY: docker-repo
+  REGION: ${{ secrets.GOOGLE_CLOUD_LOCATION }}
+  SERVICE_NAME: saige-backend-in
+  MAIN_SERVICE_NAME: oatmealfarmnetworkbackend-in
+  FRONTEND_URL: ${{ secrets.FRONTEND_URL }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Resolve SECRET_KEY (must match main India backend)
+        id: secret_key
+        run: |
+          SECRET_KEY="${{ secrets.SECRET_KEY }}"
+          if [ -z "$SECRET_KEY" ]; then
+            SECRET_KEY=$(gcloud run services describe "$MAIN_SERVICE_NAME" \
+              --region "$REGION" --project "$PROJECT_ID" \
+              --format="value(spec.template.spec.containers[0].env.filter(name=SECRET_KEY).extract(value).flatten())")
+          fi
+          if [ -z "$SECRET_KEY" ]; then
+            echo "ERROR: SECRET_KEY is not configured"
+            exit 1
+          fi
+          echo "value=$SECRET_KEY" >> "$GITHUB_OUTPUT"
+
+      - name: Configure Docker for GAR
+        run: gcloud auth configure-docker $GAR_LOCATION-docker.pkg.dev --quiet
+
+      - name: Build Docker image
+        run: |
+          docker build -f saige/Dockerfile.backend \
+            -t $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$GAR_REPOSITORY/$SERVICE_NAME:$GITHUB_SHA \
+            -t $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$GAR_REPOSITORY/$SERVICE_NAME:latest \
+            ./saige
+
+      - name: Push Docker image
+        run: |
+          docker push $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$GAR_REPOSITORY/$SERVICE_NAME:$GITHUB_SHA
+          docker push $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$GAR_REPOSITORY/$SERVICE_NAME:latest
+
+      - name: Deploy to Cloud Run
+        env:
+          SECRET_KEY: ${{ steps.secret_key.outputs.value }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          FIRESTORE_DATABASE: ${{ secrets.FIRESTORE_DATABASE }}
+          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
+          VERTEX_AI_MODEL: ${{ secrets.VERTEX_AI_MODEL }}
+        run: |
+          FE_URL="${FRONTEND_URL:-https://placeholder.invalid}"
+          gcloud run deploy $SERVICE_NAME \
+            --image $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$GAR_REPOSITORY/$SERVICE_NAME:$GITHUB_SHA \
+            --region $REGION \
+            --platform managed \
+            --allow-unauthenticated \
+            --port 8000 \
+            --memory 512Mi \
+            --cpu 1 \
+            --min-instances 0 \
+            --max-instances 10 \
+            --project $PROJECT_ID \
+            --update-env-vars "^||^GOOGLE_CLOUD_PROJECT=$PROJECT_ID||GOOGLE_CLOUD_LOCATION=$REGION||ALLOW_ALL_ORIGINS=true||GOOGLE_API_KEY=$GOOGLE_API_KEY||FRONTEND_URL=$FE_URL||SECRET_KEY=$SECRET_KEY||REDIS_ENABLED=false||FIRESTORE_DATABASE=$FIRESTORE_DATABASE||GEMINI_MODEL=$GEMINI_MODEL||VERTEX_AI_MODEL=$VERTEX_AI_MODEL"
+
+      - name: Show deployed URL
+        run: |
+          URL=$(gcloud run services describe $SERVICE_NAME \
+            --region $REGION --project $PROJECT_ID --format 'value(status.url)')
+          echo "India Saige deployed at: $URL"

@@ -1,0 +1,91 @@
+name: Deploy Main Backend (India) to Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "saige/**"
+      - ".github/workflows/deploy-saige.yml"
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
+  REGION: ${{ secrets.GOOGLE_CLOUD_LOCATION }}
+  GAR_REPOSITORY: cloud-run-source-deploy
+  SERVICE_NAME: oatmealfarmnetworkbackend-in
+  FRONTEND_URL: ${{ secrets.FRONTEND_URL }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker $REGION-docker.pkg.dev --quiet
+
+      - name: Build Docker image
+        run: |
+          IMAGE=$REGION-docker.pkg.dev/$PROJECT_ID/$GAR_REPOSITORY/$SERVICE_NAME
+          docker build \
+            -t $IMAGE:$GITHUB_SHA \
+            -t $IMAGE:latest \
+            .
+
+      - name: Push Docker image
+        run: |
+          IMAGE=$REGION-docker.pkg.dev/$PROJECT_ID/$GAR_REPOSITORY/$SERVICE_NAME
+          docker push $IMAGE:$GITHUB_SHA
+          docker push $IMAGE:latest
+
+      - name: Deploy to Cloud Run
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
+          VERTEX_AI_MODEL: ${{ secrets.VERTEX_AI_MODEL }}
+          FIRESTORE_DATABASE: ${{ secrets.FIRESTORE_DATABASE }}
+          DB_TYPE: ${{ secrets.DB_TYPE }}
+          DB_SERVER: ${{ secrets.DB_SERVER }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+        run: |
+          IMAGE=$REGION-docker.pkg.dev/$PROJECT_ID/$GAR_REPOSITORY/$SERVICE_NAME:$GITHUB_SHA
+          FE_URL="${FRONTEND_URL:-https://placeholder.invalid}"
+          gcloud run deploy $SERVICE_NAME \
+            --image $IMAGE \
+            --region $REGION \
+            --platform managed \
+            --allow-unauthenticated \
+            --port 8080 \
+            --memory 1Gi \
+            --cpu 1 \
+            --min-instances 0 \
+            --max-instances 10 \
+            --project $PROJECT_ID \
+            --update-env-vars "^||^FRONTEND_URL=$FE_URL||GOOGLE_CLOUD_PROJECT=$PROJECT_ID||GOOGLE_CLOUD_LOCATION=$REGION||GOOGLE_API_KEY=$GOOGLE_API_KEY||GEMINI_MODEL=$GEMINI_MODEL||VERTEX_AI_MODEL=$VERTEX_AI_MODEL||FIRESTORE_DATABASE=$FIRESTORE_DATABASE||DB_TYPE=$DB_TYPE||DB_SERVER=$DB_SERVER||DB_PORT=$DB_PORT||DB_USER=$DB_USER||DB_PASSWORD=$DB_PASSWORD||DB_NAME=$DB_NAME||SECRET_KEY=$SECRET_KEY"
+
+      - name: Show deployed URL
+        run: |
+          URL=$(gcloud run services describe $SERVICE_NAME \
+            --region $REGION --project $PROJECT_ID \
+            --format 'value(status.url)')
+          echo "India backend deployed at: $URL"
+          echo "Add/update GitHub secret BACKEND_URL=$URL on the frontend repo"

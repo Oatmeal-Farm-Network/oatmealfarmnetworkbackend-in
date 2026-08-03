@@ -1,0 +1,12 @@
+.gcloudignore
+.git
+.gitignore
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.log
+venv/
+.venv/
+oatmealfarmnetworkbackend/
+migrations/
