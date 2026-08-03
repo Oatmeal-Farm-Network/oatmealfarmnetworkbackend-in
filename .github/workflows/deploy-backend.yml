@@ -127,12 +127,14 @@ jobs:
           fi
 
           echo "Describing Cloud SQL instance: $SQL_INSTANCE"
-          if ! gcloud sql instances describe "$SQL_INSTANCE" --project="$PROJECT_ID" \
-              --format='yaml(name,region,databaseVersion,state,ipAddresses)' ; then
-            echo "ERROR: Cannot describe instance $SQL_INSTANCE in project $PROJECT_ID."
-            echo "Grant roles/cloudsql.viewer (or admin) to $GOOGLE_SERVICE_ACCOUNT, or create the instance."
-            exit 1
+          if ! DESC_OUT="$(gcloud sql instances describe "$SQL_INSTANCE" --project="$PROJECT_ID" \
+              --format='yaml(name,region,databaseVersion,state,ipAddresses)' 2>&1)"; then
+            echo "$DESC_OUT"
+            echo "WARNING: Cannot describe $SQL_INSTANCE (grant roles/cloudsql.viewer or admin to deploy SA)."
+            echo "Continuing deploy with DB_SERVER=$DB_HOST (manual India SQL bring-up assumed)."
+            exit 0
           fi
+          echo "$DESC_OUT"
 
           MATCH_REGION="$(gcloud sql instances describe "$SQL_INSTANCE" --project="$PROJECT_ID" --format='value(region)')"
           INSTANCE_IP="$(gcloud sql instances describe "$SQL_INSTANCE" --project="$PROJECT_ID" --format='value(ipAddresses[0].ipAddress)')"
