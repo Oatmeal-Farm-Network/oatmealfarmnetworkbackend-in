@@ -100,14 +100,14 @@ jobs:
             --platform managed \
             --allow-unauthenticated \
             --port 8080 \
-            --memory 1Gi \
-            --cpu 1 \
+            --memory 2Gi \
+            --cpu 2 \
             --timeout 300 \
             --cpu-boost \
             --min-instances 0 \
             --max-instances 10 \
             --project $PROJECT_ID \
-            --update-env-vars "^||^$ENV_VARS"
+            --update-env-vars "^||^$ENV_VARS||DB_LOGIN_TIMEOUT=3||DB_QUERY_TIMEOUT=10"
 
       - name: Show deployed URL
         run: |

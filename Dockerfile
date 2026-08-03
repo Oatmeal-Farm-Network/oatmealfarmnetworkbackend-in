@@ -13,4 +13,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}"]
+ENV PYTHONUNBUFFERED=1
+ENV DB_LOGIN_TIMEOUT=3
+ENV DB_QUERY_TIMEOUT=10
+
+# Fail fast with a clear import error in Cloud Run logs if bootstrapping crashes.
+CMD ["sh", "-c", "python -c 'import main; print(\"main import ok\")' && exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080} --log-level info"]
