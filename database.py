@@ -35,6 +35,18 @@ Base = declarative_base()
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
+def run_startup_ddl(label: str, fn):
+    """Run import-time schema DDL; log and continue on failure.
+
+    Incomplete BAK restores (or missing tables) must not prevent Cloud Run
+    from binding PORT=8080.
+    """
+    try:
+        fn()
+    except Exception as e:
+        print(f"Startup DDL warning [{label}]: {e}")
+
+
 # Dependency for FastAPI
 def get_db():
     db = SessionLocal()

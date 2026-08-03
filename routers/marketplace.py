@@ -6,7 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from database import blank_to_none
 from sqlalchemy.orm import Session
 from sqlalchemy import text, bindparam
-from database import get_db, engine
+from database import get_db, engine, run_startup_ddl
 from auth import get_current_user
 from pydantic import BaseModel
 from typing import Optional, List
@@ -46,200 +46,207 @@ def _notify_standing_order_event(
         entity_type='standing_order', entity_id=standing_order_id,
     )
 
-# ── Auto-create MarketplaceProducts table ────────────────────────────────────
-with engine.begin() as _conn:
-    _conn.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='MarketplaceProducts')
-        BEGIN
-            CREATE TABLE MarketplaceProducts (
-                ProductID          INT IDENTITY(1,1) PRIMARY KEY,
-                BusinessID         INT NOT NULL,
-                Title              VARCHAR(500) NOT NULL,
-                Description        TEXT,
-                CategoryName       VARCHAR(200),
-                UnitPrice          DECIMAL(10,2) NOT NULL DEFAULT 0,
-                WholesalePrice     DECIMAL(10,2),
-                UnitLabel          VARCHAR(50) DEFAULT 'each',
-                QuantityAvailable  DECIMAL(10,2) DEFAULT 0,
-                MinOrderQuantity   DECIMAL(10,2) DEFAULT 1,
-                ImageURL           VARCHAR(1000),
-                Tags               VARCHAR(500),
-                IsActive           BIT DEFAULT 1,
-                IsFeatured         BIT DEFAULT 0,
-                IsOrganic          BIT DEFAULT 0,
-                Weight             DECIMAL(10,2),
-                WeightUnit         VARCHAR(20),
-                Color              VARCHAR(200),
-                Size               VARCHAR(200),
-                Material           VARCHAR(200),
-                SKU                VARCHAR(100),
-                DeliveryOptions    VARCHAR(200) DEFAULT 'pickup',
-                CreatedAt          DATETIME DEFAULT GETDATE(),
-                UpdatedAt          DATETIME DEFAULT GETDATE()
-            )
-        END
-    """))
-
-# ── Auto-create RestaurantSavedFarms table ───────────────────────────────────
-with engine.begin() as _conn:
-    _conn.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='RestaurantSavedFarms')
-        BEGIN
-            CREATE TABLE RestaurantSavedFarms (
-                SavedID          INT IDENTITY(1,1) PRIMARY KEY,
-                BuyerBusinessID  INT NOT NULL,
-                FarmBusinessID   INT NOT NULL,
-                AddedByPeopleID  INT NULL,
-                Notes            NVARCHAR(500) NULL,
-                CreatedAt        DATETIME NOT NULL DEFAULT GETDATE(),
-                CONSTRAINT UQ_RestaurantSavedFarm UNIQUE (BuyerBusinessID, FarmBusinessID)
-            )
-        END
-    """))
-
-# ── Auto-create RestaurantStandingOrders table ───────────────────────────────
-# Recurring orders. ListingType + ListingSourceID identify a row in Produce/MeatInventory/ProcessedFood/SFProducts.
-with engine.begin() as _conn:
-    _conn.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='RestaurantStandingOrders')
-        BEGIN
-            CREATE TABLE RestaurantStandingOrders (
-                StandingOrderID   INT IDENTITY(1,1) PRIMARY KEY,
-                BuyerBusinessID   INT NOT NULL,
-                FarmBusinessID    INT NOT NULL,
-                ListingType       VARCHAR(20) NOT NULL,   -- 'produce' | 'meat' | 'processed_food' | 'sf'
-                ListingSourceID   INT NOT NULL,
-                ProductTitle      NVARCHAR(500) NULL,     -- snapshot for display when source row is gone
-                Quantity          DECIMAL(10,2) NOT NULL DEFAULT 1,
-                UnitLabel         NVARCHAR(50) NULL,
-                Frequency         VARCHAR(20) NOT NULL DEFAULT 'weekly', -- weekly | biweekly | monthly
-                DayOfWeek         INT NULL,               -- 0=Sun..6=Sat
-                NextDeliveryDate  DATE NULL,
-                Status            VARCHAR(20) NOT NULL DEFAULT 'active', -- active | paused | cancelled
-                Notes             NVARCHAR(500) NULL,
-                CreatedByPeopleID INT NULL,
-                CreatedAt         DATETIME NOT NULL DEFAULT GETDATE(),
-                UpdatedAt         DATETIME NOT NULL DEFAULT GETDATE()
-            )
-        END
-    """))
-
-# ── Add LastReminderSentFor column to RestaurantStandingOrders (idempotent) ──
-# Tracks which NextDeliveryDate we've already sent a pre-delivery reminder for,
-# so an hourly cron can run freely without sending duplicate reminders.
-with engine.begin() as _conn:
-    _conn.execute(text("""
-        IF NOT EXISTS (
-            SELECT 1 FROM sys.columns
-            WHERE Name = 'LastReminderSentFor' AND Object_ID = Object_ID('RestaurantStandingOrders')
-        )
-        BEGIN
-            ALTER TABLE RestaurantStandingOrders ADD LastReminderSentFor DATE NULL
-        END
-    """))
-
-# ── Auto-create RestaurantDigestSubscriptions table ──────────────────────────
-# "Available this week" weekly email digest opt-in (per restaurant business).
-with engine.begin() as _conn:
-    _conn.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='RestaurantDigestSubscriptions')
-        BEGIN
-            CREATE TABLE RestaurantDigestSubscriptions (
-                SubscriptionID    INT IDENTITY(1,1) PRIMARY KEY,
-                BuyerBusinessID   INT NOT NULL UNIQUE,
-                Email             NVARCHAR(320) NOT NULL,
-                Frequency         VARCHAR(20) NOT NULL DEFAULT 'weekly',
-                SavedFarmsOnly    BIT NOT NULL DEFAULT 0,  -- if 1, digest only includes saved farms
-                Status            VARCHAR(20) NOT NULL DEFAULT 'active',
-                LastSentAt        DATETIME NULL,
-                CreatedAt         DATETIME NOT NULL DEFAULT GETDATE(),
-                UpdatedAt         DATETIME NOT NULL DEFAULT GETDATE()
-            )
-        END
-    """))
-
-# ── Auto-create StandingOrderFulfillments table ──────────────────────────────
-# One row per confirmed delivery of a recurring standing order.
-with engine.begin() as _conn:
-    _conn.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='StandingOrderFulfillments')
-        BEGIN
-            CREATE TABLE StandingOrderFulfillments (
-                FulfillmentID      INT IDENTITY(1,1) PRIMARY KEY,
-                StandingOrderID    INT NOT NULL,
-                DeliveredAt        DATETIME NOT NULL DEFAULT GETDATE(),
-                DeliveredQuantity  FLOAT NULL,  -- may differ from the standing order's usual quantity
-                RecordedByPeopleID INT NULL,
-                Notes              NVARCHAR(1000) NULL
-            )
-        END
-    """))
-
-# ── Auto-create CronJobRuns table ────────────────────────────────────────────
-# One row per scheduled-job invocation (digest runner, etc.) — feeds the admin tracking page.
-with engine.begin() as _conn:
-    _conn.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='CronJobRuns')
-        BEGIN
-            CREATE TABLE CronJobRuns (
-                CronRunID         INT IDENTITY(1,1) PRIMARY KEY,
-                JobName           VARCHAR(100) NOT NULL,
-                StartedAt         DATETIME NOT NULL DEFAULT GETDATE(),
-                CompletedAt       DATETIME NULL,
-                Status            VARCHAR(20) NOT NULL DEFAULT 'running',  -- running | success | partial | error
-                ItemsProcessed    INT NOT NULL DEFAULT 0,
-                ItemsSucceeded    INT NOT NULL DEFAULT 0,
-                ItemsFailed       INT NOT NULL DEFAULT 0,
-                Notes             NVARCHAR(MAX) NULL
-            )
-        END
-    """))
-
-# ── Auto-create MarketplacePriceTiers table ──────────────────────────────────
-with engine.begin() as _conn:
-    _conn.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='MarketplacePriceTiers')
-        CREATE TABLE MarketplacePriceTiers (
-            TierID      INT IDENTITY(1,1) PRIMARY KEY,
-            ListingType NVARCHAR(20) NOT NULL,
-            SourceID    INT NOT NULL,
-            MinQty      DECIMAL(10,2) NOT NULL,
-            TierPrice   DECIMAL(10,2) NOT NULL,
-            CreatedAt   DATETIME NOT NULL DEFAULT GETDATE()
-        )
-    """))
-
-# ── Add partial-fulfillment columns to MarketplaceOrderItems (idempotent) ────
-with engine.begin() as _conn:
-    for _col, _ddl in [
-        ('PartialFulfillmentOk', 'BIT NOT NULL DEFAULT 0'),
-        ('FulfilledQuantity',    'DECIMAL(10,2) NULL'),
-    ]:
-        _conn.execute(text(f"""
-            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE Name='{_col}' AND Object_ID=Object_ID('MarketplaceOrderItems'))
-                ALTER TABLE MarketplaceOrderItems ADD {_col} {_ddl}
-        """))
-
-# ── Add restaurant-profile columns to Business table (nullable, idempotent) ──
-with engine.begin() as _conn:
-    for col, ddl in [
-        ('Cuisine',          "NVARCHAR(200) NULL"),
-        ('HeadChef',         "NVARCHAR(200) NULL"),
-        ('SeatingCapacity',  "INT NULL"),
-        ('RestaurantHours',  "NVARCHAR(500) NULL"),
-        ('YearOpened',       "INT NULL"),
-        ('SourcingPhilosophy', "NVARCHAR(MAX) NULL"),
-    ]:
-        _conn.execute(text(f"""
-            IF NOT EXISTS (
-                SELECT 1 FROM sys.columns
-                WHERE Name = '{col}' AND Object_ID = Object_ID('Business')
-            )
+def _marketplace_startup_ddl():
+    # ── Auto-create MarketplaceProducts table ────────────────────────────────────
+    with engine.begin() as _conn:
+        _conn.execute(text("""
+            IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='MarketplaceProducts')
             BEGIN
-                ALTER TABLE Business ADD {col} {ddl}
+                CREATE TABLE MarketplaceProducts (
+                    ProductID          INT IDENTITY(1,1) PRIMARY KEY,
+                    BusinessID         INT NOT NULL,
+                    Title              VARCHAR(500) NOT NULL,
+                    Description        TEXT,
+                    CategoryName       VARCHAR(200),
+                    UnitPrice          DECIMAL(10,2) NOT NULL DEFAULT 0,
+                    WholesalePrice     DECIMAL(10,2),
+                    UnitLabel          VARCHAR(50) DEFAULT 'each',
+                    QuantityAvailable  DECIMAL(10,2) DEFAULT 0,
+                    MinOrderQuantity   DECIMAL(10,2) DEFAULT 1,
+                    ImageURL           VARCHAR(1000),
+                    Tags               VARCHAR(500),
+                    IsActive           BIT DEFAULT 1,
+                    IsFeatured         BIT DEFAULT 0,
+                    IsOrganic          BIT DEFAULT 0,
+                    Weight             DECIMAL(10,2),
+                    WeightUnit         VARCHAR(20),
+                    Color              VARCHAR(200),
+                    Size               VARCHAR(200),
+                    Material           VARCHAR(200),
+                    SKU                VARCHAR(100),
+                    DeliveryOptions    VARCHAR(200) DEFAULT 'pickup',
+                    CreatedAt          DATETIME DEFAULT GETDATE(),
+                    UpdatedAt          DATETIME DEFAULT GETDATE()
+                )
             END
         """))
 
+    # ── Auto-create RestaurantSavedFarms table ───────────────────────────────────
+    with engine.begin() as _conn:
+        _conn.execute(text("""
+            IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='RestaurantSavedFarms')
+            BEGIN
+                CREATE TABLE RestaurantSavedFarms (
+                    SavedID          INT IDENTITY(1,1) PRIMARY KEY,
+                    BuyerBusinessID  INT NOT NULL,
+                    FarmBusinessID   INT NOT NULL,
+                    AddedByPeopleID  INT NULL,
+                    Notes            NVARCHAR(500) NULL,
+                    CreatedAt        DATETIME NOT NULL DEFAULT GETDATE(),
+                    CONSTRAINT UQ_RestaurantSavedFarm UNIQUE (BuyerBusinessID, FarmBusinessID)
+                )
+            END
+        """))
+
+    # ── Auto-create RestaurantStandingOrders table ───────────────────────────────
+    # Recurring orders. ListingType + ListingSourceID identify a row in Produce/MeatInventory/ProcessedFood/SFProducts.
+    with engine.begin() as _conn:
+        _conn.execute(text("""
+            IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='RestaurantStandingOrders')
+            BEGIN
+                CREATE TABLE RestaurantStandingOrders (
+                    StandingOrderID   INT IDENTITY(1,1) PRIMARY KEY,
+                    BuyerBusinessID   INT NOT NULL,
+                    FarmBusinessID    INT NOT NULL,
+                    ListingType       VARCHAR(20) NOT NULL,   -- 'produce' | 'meat' | 'processed_food' | 'sf'
+                    ListingSourceID   INT NOT NULL,
+                    ProductTitle      NVARCHAR(500) NULL,     -- snapshot for display when source row is gone
+                    Quantity          DECIMAL(10,2) NOT NULL DEFAULT 1,
+                    UnitLabel         NVARCHAR(50) NULL,
+                    Frequency         VARCHAR(20) NOT NULL DEFAULT 'weekly', -- weekly | biweekly | monthly
+                    DayOfWeek         INT NULL,               -- 0=Sun..6=Sat
+                    NextDeliveryDate  DATE NULL,
+                    Status            VARCHAR(20) NOT NULL DEFAULT 'active', -- active | paused | cancelled
+                    Notes             NVARCHAR(500) NULL,
+                    CreatedByPeopleID INT NULL,
+                    CreatedAt         DATETIME NOT NULL DEFAULT GETDATE(),
+                    UpdatedAt         DATETIME NOT NULL DEFAULT GETDATE()
+                )
+            END
+        """))
+
+    # ── Add LastReminderSentFor column to RestaurantStandingOrders (idempotent) ──
+    # Tracks which NextDeliveryDate we've already sent a pre-delivery reminder for,
+    # so an hourly cron can run freely without sending duplicate reminders.
+    with engine.begin() as _conn:
+        _conn.execute(text("""
+            IF OBJECT_ID('RestaurantStandingOrders', 'U') IS NOT NULL
+            AND NOT EXISTS (
+                SELECT 1 FROM sys.columns
+                WHERE Name = 'LastReminderSentFor' AND Object_ID = Object_ID('RestaurantStandingOrders')
+            )
+            BEGIN
+                ALTER TABLE RestaurantStandingOrders ADD LastReminderSentFor DATE NULL
+            END
+        """))
+
+    # ── Auto-create RestaurantDigestSubscriptions table ──────────────────────────
+    # "Available this week" weekly email digest opt-in (per restaurant business).
+    with engine.begin() as _conn:
+        _conn.execute(text("""
+            IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='RestaurantDigestSubscriptions')
+            BEGIN
+                CREATE TABLE RestaurantDigestSubscriptions (
+                    SubscriptionID    INT IDENTITY(1,1) PRIMARY KEY,
+                    BuyerBusinessID   INT NOT NULL UNIQUE,
+                    Email             NVARCHAR(320) NOT NULL,
+                    Frequency         VARCHAR(20) NOT NULL DEFAULT 'weekly',
+                    SavedFarmsOnly    BIT NOT NULL DEFAULT 0,  -- if 1, digest only includes saved farms
+                    Status            VARCHAR(20) NOT NULL DEFAULT 'active',
+                    LastSentAt        DATETIME NULL,
+                    CreatedAt         DATETIME NOT NULL DEFAULT GETDATE(),
+                    UpdatedAt         DATETIME NOT NULL DEFAULT GETDATE()
+                )
+            END
+        """))
+
+    # ── Auto-create StandingOrderFulfillments table ──────────────────────────────
+    # One row per confirmed delivery of a recurring standing order.
+    with engine.begin() as _conn:
+        _conn.execute(text("""
+            IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='StandingOrderFulfillments')
+            BEGIN
+                CREATE TABLE StandingOrderFulfillments (
+                    FulfillmentID      INT IDENTITY(1,1) PRIMARY KEY,
+                    StandingOrderID    INT NOT NULL,
+                    DeliveredAt        DATETIME NOT NULL DEFAULT GETDATE(),
+                    DeliveredQuantity  FLOAT NULL,  -- may differ from the standing order's usual quantity
+                    RecordedByPeopleID INT NULL,
+                    Notes              NVARCHAR(1000) NULL
+                )
+            END
+        """))
+
+    # ── Auto-create CronJobRuns table ────────────────────────────────────────────
+    # One row per scheduled-job invocation (digest runner, etc.) — feeds the admin tracking page.
+    with engine.begin() as _conn:
+        _conn.execute(text("""
+            IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='CronJobRuns')
+            BEGIN
+                CREATE TABLE CronJobRuns (
+                    CronRunID         INT IDENTITY(1,1) PRIMARY KEY,
+                    JobName           VARCHAR(100) NOT NULL,
+                    StartedAt         DATETIME NOT NULL DEFAULT GETDATE(),
+                    CompletedAt       DATETIME NULL,
+                    Status            VARCHAR(20) NOT NULL DEFAULT 'running',  -- running | success | partial | error
+                    ItemsProcessed    INT NOT NULL DEFAULT 0,
+                    ItemsSucceeded    INT NOT NULL DEFAULT 0,
+                    ItemsFailed       INT NOT NULL DEFAULT 0,
+                    Notes             NVARCHAR(MAX) NULL
+                )
+            END
+        """))
+
+    # ── Auto-create MarketplacePriceTiers table ──────────────────────────────────
+    with engine.begin() as _conn:
+        _conn.execute(text("""
+            IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='MarketplacePriceTiers')
+            CREATE TABLE MarketplacePriceTiers (
+                TierID      INT IDENTITY(1,1) PRIMARY KEY,
+                ListingType NVARCHAR(20) NOT NULL,
+                SourceID    INT NOT NULL,
+                MinQty      DECIMAL(10,2) NOT NULL,
+                TierPrice   DECIMAL(10,2) NOT NULL,
+                CreatedAt   DATETIME NOT NULL DEFAULT GETDATE()
+            )
+        """))
+
+    # ── Add partial-fulfillment columns to MarketplaceOrderItems (idempotent) ────
+    # Skip entirely when the table is missing (incomplete BAK / fresh India DB).
+    with engine.begin() as _conn:
+        for _col, _ddl in [
+            ('PartialFulfillmentOk', 'BIT NOT NULL DEFAULT 0'),
+            ('FulfilledQuantity',    'DECIMAL(10,2) NULL'),
+        ]:
+            _conn.execute(text(f"""
+                IF OBJECT_ID('MarketplaceOrderItems', 'U') IS NOT NULL
+                AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE Name='{_col}' AND Object_ID=Object_ID('MarketplaceOrderItems'))
+                    ALTER TABLE MarketplaceOrderItems ADD {_col} {_ddl}
+            """))
+
+    # ── Add restaurant-profile columns to Business table (nullable, idempotent) ──
+    with engine.begin() as _conn:
+        for col, ddl in [
+            ('Cuisine',          "NVARCHAR(200) NULL"),
+            ('HeadChef',         "NVARCHAR(200) NULL"),
+            ('SeatingCapacity',  "INT NULL"),
+            ('RestaurantHours',  "NVARCHAR(500) NULL"),
+            ('YearOpened',       "INT NULL"),
+            ('SourcingPhilosophy', "NVARCHAR(MAX) NULL"),
+        ]:
+            _conn.execute(text(f"""
+                IF OBJECT_ID('Business', 'U') IS NOT NULL
+                AND NOT EXISTS (
+                    SELECT 1 FROM sys.columns
+                    WHERE Name = '{col}' AND Object_ID = Object_ID('Business')
+                )
+                BEGIN
+                    ALTER TABLE Business ADD {col} {ddl}
+                END
+            """))
+
+
+run_startup_ddl("marketplace", _marketplace_startup_ddl)
 
 # ─────────────────────────────────────────────
 # PYDANTIC MODELS
