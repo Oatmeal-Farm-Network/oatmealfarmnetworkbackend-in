@@ -1,0 +1,5 @@
+c\:\\Users\\devid\\OneDrive\\Desktop\\Charlie\\hitl-agriculture-agent\\frontend:
+app		   next.config.ts  package-lock.json   tsconfig.json
+components	   next-env.d.ts   postcss.config.mjs
+Dockerfile	   node_modules    public
+eslint.config.mjs  package.json    README.md

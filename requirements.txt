@@ -1,0 +1,140 @@
+﻿# =========================================================
+# Core LLM / Agent Framework
+# =========================================================
+
+# LangChain ecosystem for LLM orchestration
+langchain>=0.3.0
+langchain-core
+langchain-community
+
+
+# Agent workflow framework
+langgraph>=0.2.0
+
+# Gemini integration
+langchain-google-genai>=2.0.0
+google-generativeai>=0.7.0
+
+
+# =========================================================
+# Google Cloud (Vertex AI + Firestore)
+# =========================================================
+
+# Authentication for Google Cloud service accounts
+google-auth>=2.0.0
+
+# Vertex AI SDK (pinned for protobuf compatibility)
+google-cloud-aiplatform==1.138.0
+
+# Firestore database for RAG document storage
+google-cloud-firestore>=2.0.0
+
+# GCS for biomass-upload image storage
+google-cloud-storage>=2.10.0
+
+# Google Earth Engine — Sentinel-2 imagery fetch for biomass estimator
+earthengine-api>=0.1.400
+
+# Google Cloud Translation API v3 — content translation utility (routers/translation.py)
+google-cloud-translate>=3.12.0
+
+
+
+# =========================================================
+# Memory Layer (RAG)
+# =========================================================
+
+# Memory management system
+mem0ai==0.1.*
+
+
+# =========================================================
+# Web API (FastAPI)
+# =========================================================
+
+fastapi
+uvicorn[standard]>=0.27.0
+
+# File uploads
+python-multipart>=0.0.20
+
+# HTTP client
+httpx>=0.27.0
+
+# HTML parser — used by Lavendir's web scraper (scrapers/lavendir_scraper.py)
+beautifulsoup4>=4.12.0
+
+
+# =========================================================
+# Data Validation / Configuration
+# =========================================================
+
+pydantic>=2.0.0
+email-validator>=2.0.0
+python-dotenv>=1.0.0
+
+
+# =========================================================
+# Database
+# =========================================================
+
+# ORM
+sqlalchemy>=2.0.0
+
+# SQL Server
+pymssql
+
+
+
+
+# =========================================================
+# Cache / Checkpoint / Message Buffer
+# =========================================================
+
+redis>=5.0.0
+
+# Redis checkpoint system for LangGraph
+langgraph-checkpoint-redis>=0.3.0 # python version for venv >3.10 or <3.14 
+
+
+# =========================================================
+# External APIs
+# =========================================================
+
+# Used for Weather API and other REST calls
+requests>=2.31.0
+
+# Email delivery
+sendgrid>=6.0.0
+
+# Payment processing
+stripe>=7.0.0
+
+# Web Push (used by saige.push_notifications for AppNotifications → phone push)
+pywebpush>=1.14.0
+
+# PDF generation for ESG audit reports (routers/esg_reports.py)
+reportlab>=4.0.0
+
+# Excel export for Precision Ag field reports (routers/precision_ag_features.py)
+openpyxl>=3.1.0
+
+# Repairs the UTF-8 → Latin-1 → UTF-8 mojibake the news ingestion pipeline
+# leaves in some article descriptions (USDA's, "quotes", etc.)
+ftfy>=6.0
+
+
+# =========================================================
+# Security / Authentication
+# =========================================================
+
+python-jose>=3.5.0
+bcrypt>=4.0.0
+
+
+# =========================================================
+# Testing
+# =========================================================
+
+pytest>=8.0.0
+pytest-asyncio>=0.23.0

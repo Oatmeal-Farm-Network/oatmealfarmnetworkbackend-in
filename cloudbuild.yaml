@@ -1,0 +1,22 @@
+# India (OatmealIndia / asia-south1) — main backend image build
+substitutions:
+  _REGION: asia-south1
+  _PROJECT_ID: oatmealindia
+  _AR_REPO: cloud-run-source-deploy
+  _SERVICE: oatmealfarmnetworkbackend-in
+
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_SERVICE}:latest'
+      - '.'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_SERVICE}:latest'
+
+images:
+  - '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_SERVICE}:latest'
