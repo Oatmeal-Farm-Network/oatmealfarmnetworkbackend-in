@@ -15,29 +15,32 @@ import os
 
 router = APIRouter(prefix="/api/provenance", tags=["provenance"])
 
-with engine.begin() as _conn:
-    _conn.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='ProvenanceRecords')
-        BEGIN
-            CREATE TABLE ProvenanceRecords (
-                RecordID              INT IDENTITY(1,1) PRIMARY KEY,
-                BusinessID            INT           NOT NULL,
-                ListingType           VARCHAR(20)   NOT NULL,
-                ListingSourceID       INT           NOT NULL,
-                FieldIDs              NVARCHAR(200) NULL,
-                GrowMethod            NVARCHAR(200) NULL,
-                InputsUsed            NVARCHAR(500) NULL,
-                HarvestDate           DATE          NULL,
-                SustainabilityNotes   NVARCHAR(MAX) NULL,
-                AIGeneratedNarrative  NVARCHAR(MAX) NULL,
-                NarrativeGeneratedAt  DATETIME      NULL,
-                CreatedAt             DATETIME      NOT NULL DEFAULT GETDATE(),
-                UpdatedAt             DATETIME      NOT NULL DEFAULT GETDATE()
-            )
-            CREATE UNIQUE INDEX IX_Provenance_Listing
-                ON ProvenanceRecords (BusinessID, ListingType, ListingSourceID)
-        END
-    """))
+try:
+    with engine.begin() as _conn:
+        _conn.execute(text("""
+            IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='ProvenanceRecords')
+            BEGIN
+                CREATE TABLE ProvenanceRecords (
+                    RecordID              INT IDENTITY(1,1) PRIMARY KEY,
+                    BusinessID            INT           NOT NULL,
+                    ListingType           VARCHAR(20)   NOT NULL,
+                    ListingSourceID       INT           NOT NULL,
+                    FieldIDs              NVARCHAR(200) NULL,
+                    GrowMethod            NVARCHAR(200) NULL,
+                    InputsUsed            NVARCHAR(500) NULL,
+                    HarvestDate           DATE          NULL,
+                    SustainabilityNotes   NVARCHAR(MAX) NULL,
+                    AIGeneratedNarrative  NVARCHAR(MAX) NULL,
+                    NarrativeGeneratedAt  DATETIME      NULL,
+                    CreatedAt             DATETIME      NOT NULL DEFAULT GETDATE(),
+                    UpdatedAt             DATETIME      NOT NULL DEFAULT GETDATE()
+                )
+                CREATE UNIQUE INDEX IX_Provenance_Listing
+                    ON ProvenanceRecords (BusinessID, ListingType, ListingSourceID)
+            END
+        """))
+except Exception as e:
+    print(f"[provenance] Table ensure warning: {e}")
 
 
 class ProvenanceUpsert(BaseModel):

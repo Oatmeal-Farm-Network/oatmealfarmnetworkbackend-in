@@ -139,20 +139,23 @@ _FV_BASE  = "https://www.marketnews.usda.gov/mnp/fv-report-top-filters"
 
 router = APIRouter(prefix="/api/commodity-prices", tags=["commodity_history"])
 
-with engine.begin() as _conn:
-    _conn.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='CommodityPriceHistory')
-        BEGIN
-            CREATE TABLE CommodityPriceHistory (
-                HistoryID   INT IDENTITY(1,1) PRIMARY KEY,
-                Commodity   VARCHAR(80)   NOT NULL,
-                PriceUSD    DECIMAL(12,4) NOT NULL,
-                FetchedAt   DATETIME      NOT NULL DEFAULT GETDATE()
-            )
-            CREATE INDEX IX_CommodityHistory_Commodity
-                ON CommodityPriceHistory (Commodity, FetchedAt DESC)
-        END
-    """))
+try:
+    with engine.begin() as _conn:
+        _conn.execute(text("""
+            IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='CommodityPriceHistory')
+            BEGIN
+                CREATE TABLE CommodityPriceHistory (
+                    HistoryID   INT IDENTITY(1,1) PRIMARY KEY,
+                    Commodity   VARCHAR(80)   NOT NULL,
+                    PriceUSD    DECIMAL(12,4) NOT NULL,
+                    FetchedAt   DATETIME      NOT NULL DEFAULT GETDATE()
+                )
+                CREATE INDEX IX_CommodityHistory_Commodity
+                    ON CommodityPriceHistory (Commodity, FetchedAt DESC)
+            END
+        """))
+except Exception as e:
+    print(f"[commodity_history] Table ensure warning: {e}")
 
 
 def _fetch_and_store_prices() -> dict:

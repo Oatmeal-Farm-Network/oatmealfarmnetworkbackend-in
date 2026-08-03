@@ -10,13 +10,14 @@ from database import get_db, engine
 from auth import get_current_user
 from pydantic import BaseModel
 from typing import Optional
+from contextlib import suppress
 
 GCS_BUCKET = "oatmeal-farm-network-images"
 
 equipment_router = APIRouter()
 
 # ── Auto-create tables ─────────────────────────────────────────────────────────
-with engine.begin() as _conn:
+with suppress(Exception), engine.begin() as _conn:
     _conn.execute(text("""
         IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='EquipmentListings')
         BEGIN

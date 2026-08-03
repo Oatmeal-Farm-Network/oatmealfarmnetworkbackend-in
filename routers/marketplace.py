@@ -11,6 +11,7 @@ from auth import get_current_user
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import date
+from contextlib import suppress
 import os
 
 from image_service import ensure_images_for_catalog
@@ -47,7 +48,7 @@ def _notify_standing_order_event(
     )
 
 # ── Auto-create MarketplaceProducts table ────────────────────────────────────
-with engine.begin() as _conn:
+with suppress(Exception), engine.begin() as _conn:
     _conn.execute(text("""
         IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='MarketplaceProducts')
         BEGIN
@@ -81,7 +82,7 @@ with engine.begin() as _conn:
     """))
 
 # ── Auto-create RestaurantSavedFarms table ───────────────────────────────────
-with engine.begin() as _conn:
+with suppress(Exception), engine.begin() as _conn:
     _conn.execute(text("""
         IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='RestaurantSavedFarms')
         BEGIN
@@ -99,7 +100,7 @@ with engine.begin() as _conn:
 
 # ── Auto-create RestaurantStandingOrders table ───────────────────────────────
 # Recurring orders. ListingType + ListingSourceID identify a row in Produce/MeatInventory/ProcessedFood/SFProducts.
-with engine.begin() as _conn:
+with suppress(Exception), engine.begin() as _conn:
     _conn.execute(text("""
         IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='RestaurantStandingOrders')
         BEGIN
@@ -127,7 +128,7 @@ with engine.begin() as _conn:
 # ── Add LastReminderSentFor column to RestaurantStandingOrders (idempotent) ──
 # Tracks which NextDeliveryDate we've already sent a pre-delivery reminder for,
 # so an hourly cron can run freely without sending duplicate reminders.
-with engine.begin() as _conn:
+with suppress(Exception), engine.begin() as _conn:
     _conn.execute(text("""
         IF NOT EXISTS (
             SELECT 1 FROM sys.columns
@@ -140,7 +141,7 @@ with engine.begin() as _conn:
 
 # ── Auto-create RestaurantDigestSubscriptions table ──────────────────────────
 # "Available this week" weekly email digest opt-in (per restaurant business).
-with engine.begin() as _conn:
+with suppress(Exception), engine.begin() as _conn:
     _conn.execute(text("""
         IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='RestaurantDigestSubscriptions')
         BEGIN
@@ -160,7 +161,7 @@ with engine.begin() as _conn:
 
 # ── Auto-create StandingOrderFulfillments table ──────────────────────────────
 # One row per confirmed delivery of a recurring standing order.
-with engine.begin() as _conn:
+with suppress(Exception), engine.begin() as _conn:
     _conn.execute(text("""
         IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='StandingOrderFulfillments')
         BEGIN
@@ -177,7 +178,7 @@ with engine.begin() as _conn:
 
 # ── Auto-create CronJobRuns table ────────────────────────────────────────────
 # One row per scheduled-job invocation (digest runner, etc.) — feeds the admin tracking page.
-with engine.begin() as _conn:
+with suppress(Exception), engine.begin() as _conn:
     _conn.execute(text("""
         IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='CronJobRuns')
         BEGIN
@@ -196,7 +197,7 @@ with engine.begin() as _conn:
     """))
 
 # ── Auto-create MarketplacePriceTiers table ──────────────────────────────────
-with engine.begin() as _conn:
+with suppress(Exception), engine.begin() as _conn:
     _conn.execute(text("""
         IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='MarketplacePriceTiers')
         CREATE TABLE MarketplacePriceTiers (
@@ -210,7 +211,7 @@ with engine.begin() as _conn:
     """))
 
 # ── Add partial-fulfillment columns to MarketplaceOrderItems (idempotent) ────
-with engine.begin() as _conn:
+with suppress(Exception), engine.begin() as _conn:
     for _col, _ddl in [
         ('PartialFulfillmentOk', 'BIT NOT NULL DEFAULT 0'),
         ('FulfilledQuantity',    'DECIMAL(10,2) NULL'),
@@ -221,7 +222,7 @@ with engine.begin() as _conn:
         """))
 
 # ── Add restaurant-profile columns to Business table (nullable, idempotent) ──
-with engine.begin() as _conn:
+with suppress(Exception), engine.begin() as _conn:
     for col, ddl in [
         ('Cuisine',          "NVARCHAR(200) NULL"),
         ('HeadChef',         "NVARCHAR(200) NULL"),

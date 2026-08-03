@@ -22,25 +22,28 @@ _SCHEDULER_SECRET = os.getenv("SCHEDULER_SECRET", "")
 
 router = APIRouter(prefix="/api/field-health-alerts", tags=["field_health_alerts"])
 
-with engine.begin() as _conn:
-    _conn.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='FieldHealthAlerts')
-        BEGIN
-            CREATE TABLE FieldHealthAlerts (
-                AlertID         INT IDENTITY(1,1) PRIMARY KEY,
-                PeopleID        INT           NOT NULL,
-                FieldID         INT           NOT NULL,
-                FieldName       NVARCHAR(200) NULL,
-                CropType        NVARCHAR(100) NULL,
-                NDVIThreshold   DECIMAL(6,4)  NOT NULL,
-                LastNotifiedAt  DATETIME      NULL,
-                LastCheckedNDVI DECIMAL(6,4)  NULL,
-                CreatedAt       DATETIME      NOT NULL DEFAULT GETDATE()
-            )
-            CREATE UNIQUE INDEX IX_FieldHealthAlerts_Field
-                ON FieldHealthAlerts (PeopleID, FieldID)
-        END
-    """))
+try:
+    with engine.begin() as _conn:
+        _conn.execute(text("""
+            IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='FieldHealthAlerts')
+            BEGIN
+                CREATE TABLE FieldHealthAlerts (
+                    AlertID         INT IDENTITY(1,1) PRIMARY KEY,
+                    PeopleID        INT           NOT NULL,
+                    FieldID         INT           NOT NULL,
+                    FieldName       NVARCHAR(200) NULL,
+                    CropType        NVARCHAR(100) NULL,
+                    NDVIThreshold   DECIMAL(6,4)  NOT NULL,
+                    LastNotifiedAt  DATETIME      NULL,
+                    LastCheckedNDVI DECIMAL(6,4)  NULL,
+                    CreatedAt       DATETIME      NOT NULL DEFAULT GETDATE()
+                )
+                CREATE UNIQUE INDEX IX_FieldHealthAlerts_Field
+                    ON FieldHealthAlerts (PeopleID, FieldID)
+            END
+        """))
+except Exception as e:
+    print(f"[field_health_alerts] Table ensure warning: {e}")
 
 
 class FieldAlertCreate(BaseModel):
