@@ -53,7 +53,7 @@ jobs:
           docker push $IMAGE:$GITHUB_SHA
           docker push $IMAGE:latest
 
-      - name: Deploy to Cloud Run
+      - name: Write Cloud Run env file
         env:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
@@ -67,33 +67,54 @@ jobs:
           DB_NAME: ${{ secrets.DB_NAME }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
         run: |
-          IMAGE=$REGION-docker.pkg.dev/$PROJECT_ID/$GAR_REPOSITORY/$SERVICE_NAME:$GITHUB_SHA
+          if [ -z "$DB_SERVER" ] || [ -z "$DB_USER" ] || [ -z "$DB_PASSWORD" ] || [ -z "$DB_NAME" ]; then
+            echo "ERROR: DB_SERVER/DB_USER/DB_PASSWORD/DB_NAME secrets are required."
+            echo "Without DB_SERVER the app connects to localhost and Cloud Run fails."
+            exit 1
+          fi
+
           FE_URL="${FRONTEND_URL:-https://placeholder.invalid}"
+          # YAML env file avoids shell escaping issues (e.g. ! in passwords)
+          python3 - <<'PY'
+          import os
+          pairs = {
+            "FRONTEND_URL": os.environ.get("FRONTEND_URL") or "https://placeholder.invalid",
+            "GOOGLE_CLOUD_PROJECT": os.environ["PROJECT_ID"],
+            "GOOGLE_CLOUD_LOCATION": os.environ["REGION"],
+            "DB_TYPE": os.environ.get("DB_TYPE") or "sqlserver",
+            "DB_SERVER": os.environ["DB_SERVER"],
+            "DB_PORT": os.environ.get("DB_PORT") or "1433",
+            "DB_USER": os.environ["DB_USER"],
+            "DB_PASSWORD": os.environ["DB_PASSWORD"],
+            "DB_NAME": os.environ["DB_NAME"],
+            "DB_LOGIN_TIMEOUT": "3",
+            "DB_QUERY_TIMEOUT": "10",
+          }
+          optional = [
+            "GOOGLE_API_KEY", "GEMINI_MODEL", "VERTEX_AI_MODEL",
+            "FIRESTORE_DATABASE", "SECRET_KEY",
+          ]
+          for k in optional:
+            v = os.environ.get(k) or ""
+            if v:
+              pairs[k] = v
 
-          # Build env var list; skip empty secrets so deploy does not inject blanks
-          ENV_VARS="FRONTEND_URL=$FE_URL||GOOGLE_CLOUD_PROJECT=$PROJECT_ID||GOOGLE_CLOUD_LOCATION=$REGION"
-          for pair in \
-            "GOOGLE_API_KEY=$GOOGLE_API_KEY" \
-            "GEMINI_MODEL=$GEMINI_MODEL" \
-            "VERTEX_AI_MODEL=$VERTEX_AI_MODEL" \
-            "FIRESTORE_DATABASE=$FIRESTORE_DATABASE" \
-            "DB_TYPE=$DB_TYPE" \
-            "DB_SERVER=$DB_SERVER" \
-            "DB_PORT=$DB_PORT" \
-            "DB_USER=$DB_USER" \
-            "DB_PASSWORD=$DB_PASSWORD" \
-            "DB_NAME=$DB_NAME" \
-            "SECRET_KEY=$SECRET_KEY"
-          do
-            key="${pair%%=*}"
-            val="${pair#*=}"
-            if [ -n "$val" ]; then
-              ENV_VARS="$ENV_VARS||$key=$val"
-            else
-              echo "WARN: secret/env $key is empty — not setting on Cloud Run"
-            fi
-          done
+          # Force FRONTEND_URL from workflow env
+          pairs["FRONTEND_URL"] = os.environ.get("FRONTEND_URL") or pairs["FRONTEND_URL"]
 
+          def yaml_escape(s: str) -> str:
+            return '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
+
+          with open("cloudrun-env.yaml", "w", encoding="utf-8") as f:
+            for k, v in pairs.items():
+              f.write(f"{k}: {yaml_escape(v)}\n")
+          print("Wrote cloudrun-env.yaml with keys:", ", ".join(pairs.keys()))
+          print("DB_SERVER length:", len(pairs["DB_SERVER"]))
+          PY
+
+      - name: Deploy to Cloud Run
+        run: |
+          IMAGE=$REGION-docker.pkg.dev/$PROJECT_ID/$GAR_REPOSITORY/$SERVICE_NAME:$GITHUB_SHA
           gcloud run deploy $SERVICE_NAME \
             --image $IMAGE \
             --region $REGION \
@@ -107,7 +128,7 @@ jobs:
             --min-instances 0 \
             --max-instances 10 \
             --project $PROJECT_ID \
-            --update-env-vars "^||^$ENV_VARS||DB_LOGIN_TIMEOUT=3||DB_QUERY_TIMEOUT=10"
+            --env-vars-file cloudrun-env.yaml
 
       - name: Show deployed URL
         run: |
