@@ -136,4 +136,11 @@ _uvicorn.*
 
 # Local Claude/Cursor worktrees
 .claude/worktrees/
+.claude/
+
+# One-time India bring-up docs/scripts (do not re-commit)
+INDIA_DEPLOY.md
+scripts/setup-india*.sh
+scripts/setup-oatmealindia-wif.sh
+scripts/create-india-sql.sh
 
