@@ -1,8 +1,10 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
+from datetime import date
 from typing import Optional
 from database import get_db
+from auth import get_current_user, assert_business_access
 
 router = APIRouter(prefix="/api/crop-planning", tags=["crop_planning"])
 
@@ -60,7 +62,9 @@ def list_plans(
     business_id: int = Query(...),
     season: Optional[str] = None,
     db: Session = Depends(get_db),
+    user=Depends(get_current_user),
 ):
+    assert_business_access(db, user, business_id)
     _ensure_tables(db)
     sql = """
         SELECT PlanID, BusinessID, FieldID, FieldName, CropName, CropVariety,
@@ -92,7 +96,9 @@ def create_plan(
     color: Optional[str] = "#3b82f6",
     notes: Optional[str] = None,
     db: Session = Depends(get_db),
+    user=Depends(get_current_user),
 ):
+    assert_business_access(db, user, business_id)
     _ensure_tables(db)
     db.execute(
         text("""
@@ -129,8 +135,13 @@ def update_plan(
     color: Optional[str] = None,
     notes: Optional[str] = None,
     db: Session = Depends(get_db),
+    user=Depends(get_current_user),
 ):
     _ensure_tables(db)
+    row = db.execute(text("SELECT BusinessID FROM CropPlan WHERE PlanID = :pid"), {"pid": plan_id}).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    assert_business_access(db, user, row[0])
     sets, params = [], {"pid": plan_id}
     mapping = {
         "FieldName": field_name, "CropName": crop_name, "CropVariety": crop_variety,
@@ -151,25 +162,92 @@ def update_plan(
 
 
 @router.delete("/plans/{plan_id}")
-def delete_plan(plan_id: int, db: Session = Depends(get_db)):
+def delete_plan(plan_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
     _ensure_tables(db)
+    row = db.execute(text("SELECT BusinessID FROM CropPlan WHERE PlanID = :pid"), {"pid": plan_id}).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    assert_business_access(db, user, row[0])
     db.execute(text("DELETE FROM CropPlan WHERE PlanID = :pid"), {"pid": plan_id})
     db.commit()
     return {"ok": True}
 
 
+def india_agro_season(today: Optional[date] = None) -> dict:
+    """Kharif / Rabi / Zaid window used by Indian crop planning."""
+    d = today or date.today()
+    m, y = d.month, d.year
+    if 6 <= m <= 10:
+        return {
+            "code": "kharif",
+            "label": f"Kharif {y}",
+            "window": "June–October (monsoon)",
+            "sow": "June–July",
+            "harvest": "September–November",
+            "crops": [
+                "Rice", "Maize", "Cotton", "Soybean", "Groundnut",
+                "Bajra", "Jowar", "Tur (Arhar)", "Sugarcane", "Turmeric", "Chilli",
+            ],
+        }
+    if m == 11 or m == 12 or m <= 3:
+        start = y if m >= 11 else y - 1
+        return {
+            "code": "rabi",
+            "label": f"Rabi {start}-{str(start + 1)[2:]}",
+            "window": "November–March (winter)",
+            "sow": "October–December",
+            "harvest": "March–April",
+            "crops": [
+                "Wheat", "Mustard", "Chana", "Masur", "Barley",
+                "Potato", "Onion", "Peas", "Cumin",
+            ],
+        }
+    return {
+        "code": "zaid",
+        "label": f"Zaid {y}",
+        "window": "March–June (summer)",
+        "sow": "March–April",
+        "harvest": "May–June",
+        "crops": [
+            "Moong", "Muskmelon", "Watermelon", "Cucumber",
+            "Fodder maize", "Vegetables",
+        ],
+    }
+
+
+@router.get("/india-calendar")
+def india_crop_calendar():
+    """Current agro-season + recommended staples (no auth — planning reference)."""
+    current = india_agro_season()
+    return {
+        "current": current,
+        "seasons": ["Kharif", "Rabi", "Zaid"],
+        "notes": "Windows vary by state. Confirm with your KVK / state agri calendar.",
+    }
+
+
 @router.get("/seasons")
-def list_seasons(business_id: int = Query(...), db: Session = Depends(get_db)):
+def list_seasons(business_id: int = Query(...), db: Session = Depends(get_db), user=Depends(get_current_user)):
+    assert_business_access(db, user, business_id)
     _ensure_tables(db)
     rows = db.execute(
         text("SELECT DISTINCT Season FROM CropPlan WHERE BusinessID = :bid ORDER BY Season DESC"),
         {"bid": business_id},
     ).fetchall()
-    current = str(__import__("datetime").date.today().year)
+    current = india_agro_season()["label"]
     seasons = [r[0] for r in rows]
-    if current not in seasons:
-        seasons.insert(0, current)
-    return seasons
+    for extra in (current, f"Kharif {date.today().year}", f"Rabi {date.today().year}-{str(date.today().year + 1)[2:]}", f"Zaid {date.today().year}"):
+        if extra not in seasons:
+            seasons.insert(0, extra)
+    # de-dupe preserving order
+    seen = set()
+    out = []
+    for s in seasons:
+        if s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return out
 
 
 @router.get("/field-history")
@@ -177,7 +255,9 @@ def field_history(
     business_id: int = Query(...),
     field_id: int = Query(...),
     db: Session = Depends(get_db),
+    user=Depends(get_current_user),
 ):
+    assert_business_access(db, user, business_id)
     _ensure_tables(db)
     rows = db.execute(
         text("""

@@ -1,12 +1,13 @@
-"""CSA Management — subscription share plans and member management."""
+"""CSA / FPO share plans — table names stay CSA*; product copy is FPO."""
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import get_db, engine
 from typing import Optional
 from pydantic import BaseModel
+from auth import get_current_user, assert_business_access
 
-router = APIRouter(prefix="/api/csa", tags=["csa"])
+router = APIRouter(tags=["csa"])
 
 with engine.begin() as _c:
     _c.execute(text("""
@@ -78,6 +79,20 @@ class PlanCreate(BaseModel):
 def _ser(r): return dict(r._mapping)
 
 
+def _plan_business_id(db: Session, plan_id: int) -> int:
+    row = db.execute(text("SELECT BusinessID FROM CSAPlans WHERE PlanID=:id"), {"id": plan_id}).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    return row[0]
+
+
+def _sub_business_id(db: Session, sub_id: int) -> int:
+    row = db.execute(text("SELECT BusinessID FROM CSASubscriptions WHERE SubscriptionID=:id"), {"id": sub_id}).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    return row[0]
+
+
 @router.get("/public")
 def browse_csa(state: Optional[str] = None, db: Session = Depends(get_db)):
     params: dict = {}
@@ -96,7 +111,8 @@ def browse_csa(state: Optional[str] = None, db: Session = Depends(get_db)):
 
 
 @router.get("/business/{business_id}/plans")
-def my_plans(business_id: int, db: Session = Depends(get_db)):
+def my_plans(business_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    assert_business_access(db, user, business_id)
     rows = db.execute(text("""
         SELECT p.*,
                (SELECT COUNT(*) FROM CSASubscriptions s WHERE s.PlanID=p.PlanID AND s.Status='active') AS ActiveSubs
@@ -106,7 +122,8 @@ def my_plans(business_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/business/{business_id}/plans")
-def create_plan(business_id: int, plan: PlanCreate, db: Session = Depends(get_db)):
+def create_plan(business_id: int, plan: PlanCreate, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    assert_business_access(db, user, business_id)
     row = db.execute(text("""
         INSERT INTO CSAPlans
             (BusinessID,Name,Description,ShareSize,PricePerShare,Frequency,
@@ -124,7 +141,8 @@ def create_plan(business_id: int, plan: PlanCreate, db: Session = Depends(get_db
 
 
 @router.put("/plans/{plan_id}")
-def update_plan(plan_id: int, plan: PlanCreate, db: Session = Depends(get_db)):
+def update_plan(plan_id: int, plan: PlanCreate, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    assert_business_access(db, user, _plan_business_id(db, plan_id))
     db.execute(text("""
         UPDATE CSAPlans SET Name=:name,Description=:desc,ShareSize=:size,PricePerShare=:price,
             Frequency=:freq,SeasonStart=:ss,SeasonEnd=:se,PickupDay=:day,
@@ -141,7 +159,8 @@ def update_plan(plan_id: int, plan: PlanCreate, db: Session = Depends(get_db)):
 
 
 @router.delete("/plans/{plan_id}")
-def delete_plan(plan_id: int, db: Session = Depends(get_db)):
+def delete_plan(plan_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    assert_business_access(db, user, _plan_business_id(db, plan_id))
     db.execute(text("UPDATE CSAPlans SET IsActive=0 WHERE PlanID=:id"), {"id": plan_id})
     db.commit()
     return {"ok": True}
@@ -172,7 +191,8 @@ def subscribe(plan_id: int, body: dict, db: Session = Depends(get_db)):
 
 
 @router.get("/plans/{plan_id}/subscribers")
-def get_subscribers(plan_id: int, db: Session = Depends(get_db)):
+def get_subscribers(plan_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    assert_business_access(db, user, _plan_business_id(db, plan_id))
     rows = db.execute(text("""
         SELECT * FROM CSASubscriptions WHERE PlanID=:id ORDER BY MemberName
     """), {"id": plan_id}).fetchall()
@@ -180,23 +200,26 @@ def get_subscribers(plan_id: int, db: Session = Depends(get_db)):
 
 
 @router.patch("/subscriptions/{sub_id}/status")
-def update_status(sub_id: int, body: dict, db: Session = Depends(get_db)):
+def update_status(sub_id: int, body: dict, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    assert_business_access(db, user, _sub_business_id(db, sub_id))
     db.execute(text("UPDATE CSASubscriptions SET Status=:s WHERE SubscriptionID=:id"), {"s": body.get("status"), "id": sub_id})
     db.commit()
     return {"ok": True}
 
 
 @router.get("/plans/{plan_id}/share-log")
-def get_share_log(plan_id: int, db: Session = Depends(get_db)):
+def get_share_log(plan_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    assert_business_access(db, user, _plan_business_id(db, plan_id))
     rows = db.execute(text("SELECT * FROM CSAShareLog WHERE PlanID=:id ORDER BY ShareDate DESC"), {"id": plan_id}).fetchall()
     return [_ser(r) for r in rows]
 
 
 @router.post("/plans/{plan_id}/share-log")
-def add_share_log(plan_id: int, body: dict, db: Session = Depends(get_db)):
+def add_share_log(plan_id: int, body: dict, db: Session = Depends(get_db), user=Depends(get_current_user)):
     plan = db.execute(text("SELECT BusinessID FROM CSAPlans WHERE PlanID=:id"), {"id": plan_id}).fetchone()
     if not plan:
         raise HTTPException(status_code=404, detail="Plan not found")
+    assert_business_access(db, user, plan.BusinessID)
     db.execute(text("""
         INSERT INTO CSAShareLog (PlanID,BusinessID,ShareDate,Contents,PickupCount,Notes)
         VALUES (:pid,:bid,:date,:contents,:count,:notes)

@@ -1,10 +1,11 @@
-"""Grant & Program Tracker — USDA/FSA programs, deadlines, applications."""
+"""Grant & Program Tracker — India farmer schemes (PM-KISAN, PMFBY, KCC, FPO)."""
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import get_db, engine
 from typing import Optional
 from pydantic import BaseModel
+from auth import get_current_user, assert_business_access
 
 router = APIRouter(prefix="/api/grants", tags=["grants"])
 
@@ -45,30 +46,103 @@ with engine.begin() as _c:
         IF NOT EXISTS (SELECT 1 FROM GrantPrograms)
         BEGIN
             INSERT INTO GrantPrograms (Title,Agency,ProgramType,MaxAmount,IsRecurring,Eligibility,ExternalUrl,Description) VALUES
-            ('EQIP — Environmental Quality Incentives Program','USDA NRCS','Conservation',450000,1,
-             'Agricultural producers, including farmers, ranchers, and forest landowners',
-             'https://www.nrcs.usda.gov/programs-initiatives/eqip-environmental-quality-incentives',
-             'Provides financial and technical assistance to agricultural producers to address natural resource concerns and deliver environmental benefits.'),
-            ('RCPP — Regional Conservation Partnership Program','USDA NRCS','Conservation',NULL,1,
-             'Farmers, ranchers, forest landowners, and other agricultural producers',
-             'https://www.nrcs.usda.gov/programs-initiatives/rcpp-regional-conservation-partnership-program',
-             'Advances conservation of soil, water, wildlife, and related natural resources through partnerships.'),
-            ('FSA Farm Loan Programs','USDA FSA','Loans',600000,1,
-             'Beginning farmers, minority farmers, family farm operators',
-             'https://www.fsa.usda.gov/programs-and-services/farm-loan-programs/index',
-             'Provides direct loans and loan guarantees to family farm operators who are temporarily unable to obtain commercial credit.'),
-            ('Beginning Farmer and Rancher Development Program','USDA NIFA','Training/Education',250000,1,
-             'Organizations that train beginning farmers and ranchers',
-             'https://www.nifa.usda.gov/grants/programs/beginning-farmer-rancher-development-program-bfrdp',
-             'Supports education, mentoring, and technical assistance initiatives for beginning farmers.'),
-            ('Value-Added Producer Grant (VAPG)','USDA Rural Development','Business Development',250000,1,
-             'Independent agricultural producers, farmer cooperatives, agricultural producer groups',
-             'https://www.rd.usda.gov/programs-services/business-programs/value-added-producer-grants',
-             'Helps agricultural producers enter into value-added activities related to the processing and marketing of bio-based products.'),
-            ('Organic Certification Cost Share Program','USDA AMS','Certification',500,1,
-             'Certified organic producers and handlers',
-             'https://www.ams.usda.gov/services/grants/occsp',
-             'Provides cost share assistance to producers and handlers of agricultural products who are obtaining or renewing their USDA organic certification.')
+            (N'PM-KISAN — Pradhan Mantri Kisan Samman Nidhi',N'Ministry of Agriculture',N'Income support',6000,1,
+             N'Small and marginal landholding farmer families (subject to scheme exclusions)',
+             N'https://pmkisan.gov.in/',
+             N'₹6,000 per year in three instalments of ₹2,000 credited to the farmer''s bank account.'),
+            (N'PMFBY — Pradhan Mantri Fasal Bima Yojana',N'Ministry of Agriculture',N'Crop insurance',NULL,1,
+             N'Farmers growing notified crops in notified areas; loanee farmers typically auto-covered',
+             N'https://pmfby.gov.in/',
+             N'Crop insurance against yield loss from natural calamities, pests, and diseases. Premiums are subsidised.'),
+            (N'Kisan Credit Card (KCC)',N'Ministry of Agriculture / Banks',N'Loans',NULL,1,
+             N'Farmers, tenant farmers, sharecroppers, SHGs, and FPOs engaged in agriculture or allied activity',
+             N'https://www.nabard.org/content1.aspx?id=572',
+             N'Short-term credit for crop inputs, working capital, and allied activities at concessional interest.'),
+            (N'Soil Health Card',N'DAC&FW',N'Soil / inputs',NULL,1,
+             N'All farmers; apply via state agriculture department / CSC',
+             N'https://soilhealth.dac.gov.in/',
+             N'Free soil testing and nutrient recommendations. Upload or request a card for your plot.'),
+            (N'eNAM — National Agriculture Market',N'MoA / SFAC',N'Market access',NULL,1,
+             N'Farmers, FPOs, and traders registered at a linked mandi',
+             N'https://www.enam.gov.in/',
+             N'Pan-India electronic trading of farm produce with quality assaying and online payment.'),
+            (N'PM-KUSUM — Solar pumps & grid',N'Ministry of New and Renewable Energy',N'Energy / irrigation',NULL,1,
+             N'Farmers, FPOs, panchayats, and cooperatives installing solar pumps or solarising pumps',
+             N'https://pmkusum.mnre.gov.in/',
+             N'Subsidy for standalone solar pumps and solarisation of existing grid-connected pumps.'),
+            (N'FPO formation & promotion (10,000 FPOs)',N'MoA / NABARD / SFAC / NCDC',N'FPO / cooperative',NULL,1,
+             N'Farmer groups forming or operating a Farmer Producer Organisation',
+             N'https://www.nabard.org/',
+             N'Handholding, equity grant, and credit guarantee support for Farmer Producer Organisations.'),
+            (N'RKVY — Rashtriya Krishi Vikas Yojana',N'Ministry of Agriculture',N'State agri development',NULL,1,
+             N'State-implemented; farmers access via state agriculture department projects',
+             N'https://rkvy.nic.in/',
+             N'State-level infrastructure, value-chain, and productivity projects. Check your state window.'),
+            (N'National Mission on Natural Farming',N'Ministry of Agriculture',N'Sustainable farming',NULL,1,
+             N'Farmers willing to adopt natural / chemical-free practices',
+             N'https://naturalfarming.dac.gov.in/',
+             N'Support for natural farming clusters, bio-inputs, and training.'),
+            (N'NHB / MIDH horticulture assistance',N'National Horticulture Board',N'Horticulture',NULL,1,
+             N'Horticulture growers, FPOs, and nurseries meeting scheme guidelines',
+             N'https://www.nhb.gov.in/',
+             N'Assistance for planting material, protected cultivation, packhouses, and cold chain.')
+        END
+    """))
+    # India fork: hide leftover USDA programs restored from USA backup
+    _c.execute(text("""
+        UPDATE GrantPrograms SET IsActive = 0
+        WHERE IsActive = 1 AND (
+            Agency LIKE 'USDA%' OR Agency LIKE '%NRCS%' OR Agency LIKE '%NIFA%'
+            OR Title LIKE 'EQIP%' OR Title LIKE 'RCPP%' OR Title LIKE 'FSA%'
+            OR Title LIKE 'Value-Added Producer%' OR Title LIKE 'Organic Certification Cost Share%'
+            OR Title LIKE 'Beginning Farmer and Rancher%'
+        )
+    """))
+    # Insert India schemes if they were never seeded (table already had USDA rows)
+    _c.execute(text("""
+        IF NOT EXISTS (SELECT 1 FROM GrantPrograms WHERE Title LIKE N'PM-KISAN%')
+        BEGIN
+            INSERT INTO GrantPrograms (Title,Agency,ProgramType,MaxAmount,IsRecurring,Eligibility,ExternalUrl,Description) VALUES
+            (N'PM-KISAN — Pradhan Mantri Kisan Samman Nidhi',N'Ministry of Agriculture',N'Income support',6000,1,
+             N'Small and marginal landholding farmer families (subject to scheme exclusions)',
+             N'https://pmkisan.gov.in/',
+             N'₹6,000 per year in three instalments of ₹2,000 credited to the farmer''s bank account.'),
+            (N'PMFBY — Pradhan Mantri Fasal Bima Yojana',N'Ministry of Agriculture',N'Crop insurance',NULL,1,
+             N'Farmers growing notified crops in notified areas; loanee farmers typically auto-covered',
+             N'https://pmfby.gov.in/',
+             N'Crop insurance against yield loss from natural calamities, pests, and diseases. Premiums are subsidised.'),
+            (N'Kisan Credit Card (KCC)',N'Ministry of Agriculture / Banks',N'Loans',NULL,1,
+             N'Farmers, tenant farmers, sharecroppers, SHGs, and FPOs engaged in agriculture or allied activity',
+             N'https://www.nabard.org/content1.aspx?id=572',
+             N'Short-term credit for crop inputs, working capital, and allied activities at concessional interest.'),
+            (N'Soil Health Card',N'DAC&FW',N'Soil / inputs',NULL,1,
+             N'All farmers; apply via state agriculture department / CSC',
+             N'https://soilhealth.dac.gov.in/',
+             N'Free soil testing and nutrient recommendations. Upload or request a card for your plot.'),
+            (N'eNAM — National Agriculture Market',N'MoA / SFAC',N'Market access',NULL,1,
+             N'Farmers, FPOs, and traders registered at a linked mandi',
+             N'https://www.enam.gov.in/',
+             N'Pan-India electronic trading of farm produce with quality assaying and online payment.'),
+            (N'PM-KUSUM — Solar pumps & grid',N'Ministry of New and Renewable Energy',N'Energy / irrigation',NULL,1,
+             N'Farmers, FPOs, panchayats, and cooperatives installing solar pumps or solarising pumps',
+             N'https://pmkusum.mnre.gov.in/',
+             N'Subsidy for standalone solar pumps and solarisation of existing grid-connected pumps.'),
+            (N'FPO formation & promotion (10,000 FPOs)',N'MoA / NABARD / SFAC / NCDC',N'FPO / cooperative',NULL,1,
+             N'Farmer groups forming or operating a Farmer Producer Organisation',
+             N'https://www.nabard.org/',
+             N'Handholding, equity grant, and credit guarantee support for Farmer Producer Organisations.'),
+            (N'RKVY — Rashtriya Krishi Vikas Yojana',N'Ministry of Agriculture',N'State agri development',NULL,1,
+             N'State-implemented; farmers access via state agriculture department projects',
+             N'https://rkvy.nic.in/',
+             N'State-level infrastructure, value-chain, and productivity projects. Check your state window.'),
+            (N'National Mission on Natural Farming',N'Ministry of Agriculture',N'Sustainable farming',NULL,1,
+             N'Farmers willing to adopt natural / chemical-free practices',
+             N'https://naturalfarming.dac.gov.in/',
+             N'Support for natural farming clusters, bio-inputs, and training.'),
+            (N'NHB / MIDH horticulture assistance',N'National Horticulture Board',N'Horticulture',NULL,1,
+             N'Horticulture growers, FPOs, and nurseries meeting scheme guidelines',
+             N'https://www.nhb.gov.in/',
+             N'Assistance for planting material, protected cultivation, packhouses, and cold chain.')
         END
     """))
 
@@ -110,7 +184,8 @@ def browse_grants(
 
 
 @router.get("/business/{business_id}/tracking")
-def my_tracking(business_id: int, db: Session = Depends(get_db)):
+def my_tracking(business_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    assert_business_access(db, user, business_id)
     rows = db.execute(text("""
         SELECT t.*, g.Title AS GrantTitle, g.Agency, g.MaxAmount, g.Deadline, g.ExternalUrl
         FROM BusinessGrantTracking t
@@ -122,7 +197,8 @@ def my_tracking(business_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/business/{business_id}/tracking")
-def track_grant(business_id: int, body: dict, db: Session = Depends(get_db)):
+def track_grant(business_id: int, body: dict, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    assert_business_access(db, user, business_id)
     row = db.execute(text("""
         INSERT INTO BusinessGrantTracking (GrantID,BusinessID,Status,Notes,AppliedDate,ResultDate,AmountReceived)
         OUTPUT INSERTED.TrackingID
@@ -138,7 +214,8 @@ def track_grant(business_id: int, body: dict, db: Session = Depends(get_db)):
 
 
 @router.patch("/business/{business_id}/tracking/{tracking_id}")
-def update_tracking(business_id: int, tracking_id: int, body: dict, db: Session = Depends(get_db)):
+def update_tracking(business_id: int, tracking_id: int, body: dict, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    assert_business_access(db, user, business_id)
     db.execute(text("""
         UPDATE BusinessGrantTracking SET
             Status=ISNULL(:status,Status),
@@ -157,7 +234,8 @@ def update_tracking(business_id: int, tracking_id: int, body: dict, db: Session 
 
 
 @router.delete("/business/{business_id}/tracking/{tracking_id}")
-def delete_tracking(business_id: int, tracking_id: int, db: Session = Depends(get_db)):
+def delete_tracking(business_id: int, tracking_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    assert_business_access(db, user, business_id)
     db.execute(text("DELETE FROM BusinessGrantTracking WHERE TrackingID=:id AND BusinessID=:bid"), {"id": tracking_id, "bid": business_id})
     db.commit()
     return {"ok": True}

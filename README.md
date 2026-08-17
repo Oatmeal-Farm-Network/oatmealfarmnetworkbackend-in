@@ -190,7 +190,7 @@ This is a comprehensive, enterprise-scale backend for the Oatmeal Farm Network p
 │   │   ├── picker_performance.py    # Harvest worker performance
 │   │   ├── farm_kpi.py              # Farm KPI tracking
 │   │   ├── market_alerts.py         # Market price alerts
-│   │   ├── commodity_history.py     # Commodity price history
+│   │   ├── commodity_history.py     # India mandi prices (farmer.in) + optional US USDA/Yahoo
 │   │   ├── field_health_alerts.py   # Field health warnings
 │   │   ├── thaiyme.py               # Specialty crop (Thai herbs)
 │   │   ├── food_aggregator.py       # Food aggregation
@@ -345,6 +345,18 @@ REDIS_URL=redis://localhost:6379/0
 # --- CORS ---
 FRONTEND_URL=http://localhost:3000
 ALLOW_ALL_ORIGINS=false
+
+# --- India commodity / mandi prices ---
+COMMODITY_MARKET=india
+# Optional override (default: farmer.in open Agmarknet feed)
+# INDIA_MANDI_PRICES_URL=https://farmer.in/api/open/prices.json
+
+# --- Weather (Open-Meteo) ---
+WEATHER_UNITS=metric
+# WEATHER_UNITS=imperial  # only if you need °F/mph/inch
+
+# --- Scheduler (price fetch webhook) ---
+# CRON_SECRET=long-random-string   # send as X-Cron-Secret on POST /api/commodity-prices/fetch
 
 # --- Marketplace (optional) ---
 STRIPE_SECRET_KEY=your_stripe_key

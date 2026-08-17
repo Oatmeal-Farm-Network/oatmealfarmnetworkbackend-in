@@ -11,6 +11,8 @@ from database import get_db
 from typing import Optional
 from routers.rbac import record_audit
 from routers.notifications import notify_business
+from auth import get_current_user
+from precision_ag_auth import _verify_business_access, _verify_field_access
 
 router = APIRouter(prefix="/api/work-orders", tags=["work_orders"])
 _ready = False
@@ -157,9 +159,12 @@ def get_work_order(wo_id: int, business_id: int = Query(...), db: Session = Depe
 
 
 @router.post("")
-def create_work_order(body: dict, db: Session = Depends(get_db)):
+def create_work_order(body: dict, db: Session = Depends(get_db), user=Depends(get_current_user)):
     body = blank_to_none(body)
     _ensure(db)
+    _verify_business_access(db, user.PeopleID, body["BusinessID"])
+    if body.get("FieldID"):
+        _verify_field_access(db, user.PeopleID, int(body["FieldID"]))
     r = db.execute(text("""
         INSERT INTO WorkOrder (BusinessID,FieldID,Location,TaskType,Title,Description,Priority,
             Status,AssignedTo,AssignedDate,DueDate,EstimatedHours,EstimatedCost,Notes)

@@ -1,8 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
+from typing import Optional
+import os
 from database import get_db
-from auth import create_access_token, get_current_user, hash_password, verify_password, verify_password_reset_token, create_password_reset_token
+from auth import create_access_token, get_current_user, hash_password, verify_password, verify_password_reset_token, create_password_reset_token, ACCESS_TOKEN_EXPIRE_MINUTES, assert_business_access
 import models
 from sqlalchemy import select, text
 
@@ -182,11 +185,19 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
             models.People.PeopleEmail == request.Email,
             models.People.PeopleActive == 1
         ).first()
-        if not user or not verify_password(request.Password, user.PeoplePassword or ""):
+        stored = user.PeoplePassword or ""
+        if not user or not verify_password(request.Password, stored):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect email or password"
             )
+        # Upgrade legacy plaintext hashes on successful login
+        if stored and not stored.startswith("$2"):
+            try:
+                user.PeoplePassword = hash_password(request.Password)
+                db.commit()
+            except Exception:
+                db.rollback()
 
         # If team-only login is active, reject accounts with accesslevel < 1
         settings = db.query(models.SiteSettings).filter(models.SiteSettings.id == 1).first()
@@ -204,7 +215,7 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
         except Exception:
             pass
 
-        return {
+        payload = {
             "AccessToken": token,
             "token_type": "bearer",
             "PeopleID": user.PeopleID,
@@ -213,6 +224,17 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
             "AccessLevel": user.accesslevel or 0,
             "LKMAccessLevel": getattr(user, 'LKMAccessLevel', 0) or 0
         }
+        resp = JSONResponse(content=payload)
+        resp.set_cookie(
+            key="ofn_access_token",
+            value=token,
+            httponly=True,
+            secure=bool(os.getenv("K_SERVICE")),
+            samesite="lax",
+            max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            path="/",
+        )
+        return resp
     except HTTPException:
         raise
     except Exception as e:
@@ -276,7 +298,13 @@ def update_login(payload: UpdateLoginRequest, current_user=Depends(get_current_u
 # My businesses
 # -------------------------
 @router.get("/my-businesses")
-def GetMyBusinesses(PeopleID: int, Db: Session = Depends(get_db)):
+def GetMyBusinesses(
+    PeopleID: Optional[int] = None,
+    user=Depends(get_current_user),
+    Db: Session = Depends(get_db),
+):
+    # Always use the authenticated user — ignore spoofed PeopleID query params
+    PeopleID = user.PeopleID
     rows = (
         Db.query(models.Business, models.Address, models.BusinessTypeLookup)
         .join(models.BusinessAccess, models.Business.BusinessID == models.BusinessAccess.BusinessID)
