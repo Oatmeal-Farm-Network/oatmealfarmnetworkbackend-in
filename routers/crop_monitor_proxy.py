@@ -123,6 +123,29 @@ def get_field_water_use_series(
 
 # ─── Agronomy + recommendations ─────────────────────────────────────────────
 
+@router.get("/fields/{field_id}/analyses")
+def get_field_analyses(
+    field_id: int,
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Satellite analysis history from CropMonitor (proxied)."""
+    _verify_field_access(db, user.PeopleID, field_id)
+    return _proxy_get(f"/api/fields/{field_id}/analyses", {"limit": limit})
+
+
+@router.post("/fields/{field_id}/analyze")
+def run_field_analysis(
+    field_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Trigger a fresh Sentinel analysis on CropMonitor."""
+    _verify_field_access(db, user.PeopleID, field_id)
+    return _proxy_post(f"/api/fields/{field_id}/analyze")
+
+
 @router.get("/fields/{field_id}/agronomy")
 def get_field_agronomy(
     field_id: int,
