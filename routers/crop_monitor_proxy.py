@@ -406,11 +406,35 @@ def get_field_raster_values(
     params = {"grid": grid}
     if analysis_id is not None:
         params["analysis_id"] = analysis_id
-    return _proxy_get(
+    raw = _proxy_get_soft(
         f"/api/fields/{field_id}/raster/{index_name}",
         params,
         timeout=60,
     )
+    if raw and ((raw.get("grid") or {}).get("values") or raw.get("values")):
+        return raw
+    field = (
+        db.query(models.Field)
+        .filter(models.Field.FieldID == field_id, models.Field.DeletedAt.is_(None))
+        .first()
+    )
+    if not field:
+        raise HTTPException(status_code=404, detail="Field not found")
+    overlay = _terrain_screening.build_vegetation_overlay_json(
+        field, field_id, index_name, grid, db,
+    )
+    return {
+        "field_id": field_id,
+        "index": overlay.get("index") or index_name.upper(),
+        "bbox": overlay.get("bbox"),
+        "image_date": overlay.get("image_date"),
+        "source": overlay.get("source"),
+        "grid": {
+            "values": overlay.get("values"),
+            "rows": overlay.get("rows"),
+            "cols": overlay.get("cols"),
+        },
+    }
 
 
 @router.get("/fields/{field_id}/zones/prescription")
@@ -659,21 +683,22 @@ def get_terrain_overlay(
     veg_indices = {"ndvi", "ndwi", "ndre", "evi", "gndvi", "msavi"}
 
     if fmt == "json":
-        try:
-            return _proxy_get(
-                f"/api/fields/{field_id}/terrain/overlay/{layer}",
-                {"grid": grid, "format": "json"},
+        data = _proxy_get_soft(
+            f"/api/fields/{field_id}/terrain/overlay/{layer}",
+            {"grid": grid, "format": "json"},
+            timeout=90,
+        )
+        if data and (data.get("values") or (data.get("grid") or {}).get("values")):
+            return data
+        if layer_key in veg_indices:
+            raw = _proxy_get_soft(
+                f"/api/fields/{field_id}/raster/{layer_key}",
+                {"grid": min(grid, 96)},
                 timeout=90,
             )
-        except HTTPException as e:
-            if layer_key in veg_indices and e.status_code in (404, 500, 502):
-                raw = _proxy_get(
-                    f"/api/fields/{field_id}/raster/{layer_key}",
-                    {"grid": min(grid, 96)},
-                    timeout=90,
-                )
+            if raw:
                 g = (raw or {}).get("grid") or {}
-                values = g.get("values")
+                values = g.get("values") or raw.get("values")
                 if values:
                     return {
                         "values": values,
@@ -682,11 +707,19 @@ def get_terrain_overlay(
                         "bbox": (raw or {}).get("bbox"),
                         "index": (raw or {}).get("index") or layer_key.upper(),
                         "image_date": (raw or {}).get("image_date"),
-                        "source": "cropmonitor_raster",
+                        "source": (raw or {}).get("source") or "cropmonitor_raster",
                         "raster": (raw or {}).get("raster"),
                     }
-                raise HTTPException(status_code=404, detail="Raster grid empty")
-            raise
+            field = (
+                db.query(models.Field)
+                .filter(models.Field.FieldID == field_id, models.Field.DeletedAt.is_(None))
+                .first()
+            )
+            if field:
+                return _terrain_screening.build_vegetation_overlay_json(
+                    field, field_id, layer_key, grid, db,
+                )
+        raise HTTPException(status_code=404, detail="Overlay grid unavailable")
 
     try:
         return _proxy_bytes(
@@ -695,10 +728,16 @@ def get_terrain_overlay(
         )
     except HTTPException as e:
         if layer_key in veg_indices and e.status_code in (404, 500, 502):
-            return _proxy_bytes(
-                f"/api/fields/{field_id}/heatmap/{layer_key}",
-                None,
-            )
+            try:
+                return _proxy_bytes(
+                    f"/api/fields/{field_id}/heatmap/{layer_key}",
+                    None,
+                )
+            except HTTPException:
+                raise HTTPException(
+                    status_code=404,
+                    detail="PNG overlay unavailable — use format=json for grid paint",
+                )
         raise
 
 

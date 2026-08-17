@@ -387,6 +387,102 @@ def build_screening_metadata(field, field_id: int, grid: int = 64) -> dict[str, 
     }
 
 
+def build_vegetation_overlay_json(
+    field,
+    field_id: int,
+    layer: str,
+    grid: int = 64,
+    db=None,
+) -> dict[str, Any]:
+    """
+    NDVI/NDWI JSON grid for Field Twin when CropMonitor raster/overlay is unavailable.
+    Uses latest dbo.VegetationIndex mean when present; otherwise a labeled screening grid.
+    """
+    layer_key = (layer or "ndvi").strip().lower()
+    idx_name = layer_key.upper()
+    if idx_name not in {"NDVI", "NDWI", "NDRE", "EVI", "GNDVI", "MSAVI"}:
+        idx_name = "NDVI"
+    size = max(32, min(int(grid or 64), 256))
+    bbox = _bbox_from_field(field)
+
+    mean: Optional[float] = None
+    vmin: Optional[float] = None
+    vmax: Optional[float] = None
+    source = "screening_estimated"
+    image_date = None
+
+    if db is not None:
+        try:
+            from sqlalchemy import text as sa_text
+
+            row = db.execute(
+                sa_text("""
+                    SELECT TOP 1 v.MeanValue, v.MinValue, v.MaxValue, a.AnalysisDate
+                      FROM dbo.Analysis a
+                      INNER JOIN dbo.VegetationIndex v ON v.AnalysisID = a.AnalysisID
+                     WHERE a.FieldID = :fid AND v.IndexType = :idx
+                     ORDER BY a.AnalysisDate DESC
+                """),
+                {"fid": int(field_id), "idx": idx_name},
+            ).fetchone()
+            if row is not None and row[0] is not None:
+                mean = float(row[0])
+                vmin = float(row[1]) if row[1] is not None else mean - 0.1
+                vmax = float(row[2]) if row[2] is not None else mean + 0.1
+                source = "local_analysis"
+                ad = row[3]
+                if ad is not None:
+                    image_date = ad.isoformat() if hasattr(ad, "isoformat") else str(ad)
+        except Exception:
+            pass
+
+    if mean is None:
+        mean = 0.22 if idx_name == "NDVI" else (-0.05 if idx_name == "NDWI" else 0.2)
+        vmin = mean - 0.12
+        vmax = mean + 0.12
+
+    lo = float(vmin if vmin is not None else mean - 0.1)
+    hi = float(vmax if vmax is not None else mean + 0.1)
+    span = max(0.02, hi - lo)
+    rand = _mulberry(int(field_id) * 9973 + sum(ord(c) for c in idx_name))
+    values: list[list[float]] = []
+    for ry in range(size):
+        row_vals: list[float] = []
+        for cx in range(size):
+            nx = cx / size - 0.5
+            ny = ry / size - 0.5
+            noise = (rand() + rand() + rand() - 1.5) * span * 0.12
+            patch = math.sin(nx * 8.0 + field_id) * math.cos(ny * 7.0 + field_id) * span * 0.18
+            v = mean + noise + patch
+            if idx_name == "NDVI":
+                v = max(-0.1, min(0.95, v))
+            else:
+                v = max(-0.8, min(0.8, v))
+            row_vals.append(round(v, 4))
+        values.append(row_vals)
+
+    limitations = (
+        ["Spatial pattern is illustrative screening — not a Sentinel pixel map."]
+        if source == "screening_estimated"
+        else [
+            "Mean index from stored satellite analysis; cell pattern is upsampled for 3D display only.",
+        ]
+    )
+
+    return {
+        "values": values,
+        "rows": size,
+        "cols": size,
+        "bbox": bbox,
+        "index": idx_name,
+        "image_date": image_date,
+        "source": source,
+        "provenance": "derived" if source == "local_analysis" else "modeled",
+        "confidence": "medium" if source == "local_analysis" else "low",
+        "limitations": limitations,
+    }
+
+
 def build_screening_texture_png(size: int = 128) -> bytes:
     """Solid olive PNG so texture requests do not hard-404 the twin."""
     size = max(16, min(int(size or 128), 256))
