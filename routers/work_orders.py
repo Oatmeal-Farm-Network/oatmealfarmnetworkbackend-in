@@ -404,16 +404,27 @@ def add_gh_reading(body: dict, db: Session = Depends(get_db)):
 
 @router.get("/summary/dashboard")
 def wo_summary(business_id: int = Query(...), db: Session = Depends(get_db)):
-    _ensure(db)
-    row = db.execute(text("""
-        SELECT
-            COUNT(*) AS Total,
-            SUM(CASE WHEN Status='open' THEN 1 ELSE 0 END) AS Open,
-            SUM(CASE WHEN Status='in_progress' THEN 1 ELSE 0 END) AS InProgress,
-            SUM(CASE WHEN Status='completed' THEN 1 ELSE 0 END) AS Completed,
-            SUM(CASE WHEN DueDate < CAST(GETDATE() AS DATE) AND Status NOT IN ('completed','cancelled') THEN 1 ELSE 0 END) AS Overdue,
-            ISNULL(SUM(ActualCost),0) AS TotalActualCost,
-            ISNULL(SUM(EstimatedCost),0) AS TotalEstimatedCost
-        FROM WorkOrder WHERE BusinessID=:bid
-    """), {"bid": business_id}).fetchone()
-    return dict(row._mapping) if row else {}
+    try:
+        _ensure(db)
+        row = db.execute(text("""
+            SELECT
+                COUNT(*) AS Total,
+                SUM(CASE WHEN Status='open' THEN 1 ELSE 0 END) AS Open,
+                SUM(CASE WHEN Status='in_progress' THEN 1 ELSE 0 END) AS InProgress,
+                SUM(CASE WHEN Status='completed' THEN 1 ELSE 0 END) AS Completed,
+                SUM(CASE WHEN DueDate < CAST(GETDATE() AS DATE) AND Status NOT IN ('completed','cancelled') THEN 1 ELSE 0 END) AS Overdue,
+                ISNULL(SUM(ActualCost),0) AS TotalActualCost,
+                ISNULL(SUM(EstimatedCost),0) AS TotalEstimatedCost
+            FROM WorkOrder WHERE BusinessID=:bid
+        """), {"bid": business_id}).fetchone()
+        return dict(row._mapping) if row else {}
+    except Exception:
+        return {
+            "Total": 0,
+            "Open": 0,
+            "InProgress": 0,
+            "Completed": 0,
+            "Overdue": 0,
+            "TotalActualCost": 0,
+            "TotalEstimatedCost": 0,
+        }
