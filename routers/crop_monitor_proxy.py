@@ -15,6 +15,7 @@ don't belong to the caller.
 """
 from __future__ import annotations
 
+import json
 import os
 from typing import List, Optional
 
@@ -89,6 +90,172 @@ def _proxy_post(path: str, json_body: dict | None = None) -> dict:
         return {"ok": True}
 
 
+def _proxy_get_soft(path: str, params: dict | None = None, timeout: int | None = None) -> Optional[dict]:
+    """Best-effort CropMonitor GET — returns None when unreachable or non-2xx."""
+    try:
+        r = requests.get(
+            f"{CROP_MONITOR_URL}{path}",
+            params=params or {},
+            timeout=timeout or _TIMEOUT_S,
+        )
+        if not r.ok:
+            return None
+        return r.json()
+    except (requests.RequestException, ValueError):
+        return None
+
+
+def _proxy_post_soft(path: str, json_body: dict | None = None) -> Optional[dict]:
+    try:
+        r = requests.post(f"{CROP_MONITOR_URL}{path}", json=json_body or {}, timeout=_TIMEOUT_S)
+        if not r.ok:
+            return None
+        try:
+            return r.json()
+        except ValueError:
+            return {"ok": True}
+    except requests.RequestException:
+        return None
+
+
+def _iso_out(v) -> Optional[str]:
+    if v is None:
+        return None
+    if hasattr(v, "isoformat"):
+        s = v.isoformat()
+        if "T" in s and not s.endswith("Z") and "+" not in s:
+            return s + "Z"
+        return s
+    return str(v)
+
+
+def _local_analyses(db: Session, field_id: int, limit: int) -> dict:
+    """Read dbo.Analysis directly when CropMonitor Cloud Run is down or stale."""
+    lim = max(1, min(int(limit), 200))
+    try:
+        rows = db.execute(
+            text(f"""
+                SELECT TOP {lim}
+                       a.AnalysisID AS analysis_id,
+                       a.AnalysisDate AS analysis_date,
+                       a.HealthScore AS health_score,
+                       a.Status AS status,
+                       a.NDVIUrl AS ndvi_url,
+                       a.ImageUrls AS image_urls,
+                       a.SatelliteAcquiredAt AS satellite_acquired_at,
+                       (SELECT IndexType AS index_type, MeanValue AS mean,
+                               MinValue AS min, MaxValue AS max
+                          FROM dbo.VegetationIndex vi
+                         WHERE vi.AnalysisID = a.AnalysisID
+                           FOR JSON PATH) AS vegetation_indices
+                  FROM dbo.Analysis a
+                 WHERE a.FieldID = :fid
+                 ORDER BY a.AnalysisDate DESC
+            """),
+            {"fid": field_id},
+        ).fetchall()
+    except Exception:
+        return {"analyses": [], "source": "local_db"}
+    analyses: list[dict] = []
+    for row in rows:
+        m = row._mapping
+        item = dict(m)
+        vi = item.get("vegetation_indices")
+        if isinstance(vi, str):
+            try:
+                item["vegetation_indices"] = json.loads(vi)
+            except json.JSONDecodeError:
+                item["vegetation_indices"] = []
+        if isinstance(item.get("image_urls"), str):
+            try:
+                item["image_urls"] = json.loads(item["image_urls"])
+            except json.JSONDecodeError:
+                pass
+        item["analysis_date"] = _iso_out(item.get("analysis_date"))
+        item["satellite_acquired_at"] = _iso_out(item.get("satellite_acquired_at"))
+        analyses.append(item)
+    return {"analyses": analyses, "source": "local_db"}
+
+
+def _local_index_series(db: Session, field_id: int, index: str, days: int, limit: int) -> dict:
+    idx = (index or "NDVI").strip().upper()
+    days = max(7, min(int(days), 730))
+    lim = max(1, min(int(limit), 500))
+    series: list[dict] = []
+    try:
+        rows = db.execute(
+            text(f"""
+                SELECT TOP {lim}
+                       a.AnalysisID AS analysis_id,
+                       a.AnalysisDate AS analysis_date,
+                       v.MeanValue AS mean,
+                       v.MinValue AS min,
+                       v.MaxValue AS max,
+                       v.StdDev AS std
+                  FROM dbo.Analysis a
+                  JOIN dbo.VegetationIndex v ON v.AnalysisID = a.AnalysisID
+                 WHERE a.FieldID = :fid
+                   AND v.IndexType = :idx
+                   AND a.AnalysisDate >= DATEADD(day, -:days, CAST(GETUTCDATE() AS DATE))
+                 ORDER BY a.AnalysisDate ASC
+            """),
+            {"fid": field_id, "idx": idx, "days": days},
+        ).fetchall()
+        for row in rows:
+            m = row._mapping
+            series.append({
+                "analysis_id": m.get("analysis_id"),
+                "date": _iso_out(m.get("analysis_date")),
+                "mean": float(m["mean"]) if m.get("mean") is not None else None,
+                "min": float(m["min"]) if m.get("min") is not None else None,
+                "max": float(m["max"]) if m.get("max") is not None else None,
+                "std": float(m["std"]) if m.get("std") is not None else None,
+            })
+    except Exception:
+        pass
+    return {
+        "field_id": field_id,
+        "index": idx,
+        "days": days,
+        "series": series,
+        "summary": None,
+        "source": "local_db",
+    }
+
+
+def _local_agronomy(db: Session, field_id: int) -> dict:
+    field = (
+        db.query(models.Field)
+        .filter(models.Field.FieldID == field_id, models.Field.DeletedAt.is_(None))
+        .first()
+    )
+    analyses_payload = _local_analyses(db, field_id, 2)
+    latest = (analyses_payload.get("analyses") or [None])[0]
+    return {
+        "field_id": field_id,
+        "field_name": getattr(field, "Name", None) if field else None,
+        "crop_type": getattr(field, "CropType", None) if field else None,
+        "latest_analysis": latest,
+        "weather": None,
+        "forecast": [],
+        "recommendations": [],
+        "irrigation": None,
+        "disease_alerts": [],
+        "source": "local_db",
+        "note": "CropMonitor service unavailable — showing stored analysis rows only.",
+    }
+
+
+def _local_recommendations(db: Session, field_id: int) -> dict:
+    analyses = _local_analyses(db, field_id, 1).get("analyses") or []
+    latest = analyses[0] if analyses else None
+    return {
+        "field_id": field_id,
+        "health_score": latest.get("health_score") if latest else None,
+        "recommendations": [],
+        "source": "local_db",
+    }
+
 # ─── WaPOR water use ────────────────────────────────────────────────────────
 
 @router.get("/fields/{field_id}/water-use")
@@ -132,7 +299,10 @@ def get_field_analyses(
 ):
     """Satellite analysis history from CropMonitor (proxied)."""
     _verify_field_access(db, user.PeopleID, field_id)
-    return _proxy_get(f"/api/fields/{field_id}/analyses", {"limit": limit})
+    data = _proxy_get_soft(f"/api/fields/{field_id}/analyses", {"limit": limit})
+    if data is not None:
+        return data
+    return _local_analyses(db, field_id, limit)
 
 
 @router.post("/fields/{field_id}/analyze")
@@ -143,7 +313,15 @@ def run_field_analysis(
 ):
     """Trigger a fresh Sentinel analysis on CropMonitor."""
     _verify_field_access(db, user.PeopleID, field_id)
-    return _proxy_post(f"/api/fields/{field_id}/analyze")
+    data = _proxy_post_soft(f"/api/fields/{field_id}/analyze")
+    if data is not None:
+        return data
+    return {
+        "message": "CropMonitor is not reachable from India backend yet. "
+                   "Analysis was not queued; contact ops to deploy crop-monitor-in.",
+        "queued": False,
+        "source": "local_fallback",
+    }
 
 
 @router.get("/fields/{field_id}/agronomy")
@@ -156,7 +334,10 @@ def get_field_agronomy(
     growth stage + latest indices + irrigation/disease signals. Cached
     server-side."""
     _verify_field_access(db, user.PeopleID, field_id)
-    return _proxy_get(f"/api/fields/{field_id}/agronomy")
+    data = _proxy_get_soft(f"/api/fields/{field_id}/agronomy", timeout=60)
+    if data is not None:
+        return data
+    return _local_agronomy(db, field_id)
 
 
 @router.get("/fields/{field_id}/recommendations")
@@ -168,10 +349,11 @@ def get_field_recommendations(
     """Operational recommendations driven by CropMonitor's health-score +
     NDVI + current weather."""
     _verify_field_access(db, user.PeopleID, field_id)
-    return _proxy_get(f"/api/fields/{field_id}/recommendations")
+    data = _proxy_get_soft(f"/api/fields/{field_id}/recommendations")
+    if data is not None:
+        return data
+    return _local_recommendations(db, field_id)
 
-
-# ─── Time-series indices + stress zones ─────────────────────────────────────
 
 @router.get("/fields/{field_id}/indices/series")
 def get_field_index_series(
@@ -184,10 +366,11 @@ def get_field_index_series(
 ):
     """Time series of a vegetation index for the field — used by trend charts."""
     _verify_field_access(db, user.PeopleID, field_id)
-    return _proxy_get(
-        f"/api/fields/{field_id}/indices/series",
-        {"index": index, "days": days, "limit": limit},
-    )
+    params = {"index": index, "days": days, "limit": limit}
+    data = _proxy_get_soft(f"/api/fields/{field_id}/indices/series", params)
+    if data is not None:
+        return data
+    return _local_index_series(db, field_id, index, days, limit)
 
 
 @router.get("/fields/{field_id}/zones")
