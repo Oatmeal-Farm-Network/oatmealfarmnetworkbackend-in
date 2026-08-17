@@ -93,6 +93,8 @@ jobs:
             "COMMODITY_MARKET": os.environ.get("COMMODITY_MARKET") or "india",
             "INDIA_MANDI_PRICES_URL": os.environ.get("INDIA_MANDI_PRICES_URL")
               or "https://farmer.in/api/open/prices.json",
+            "CROP_MONITOR_URL": os.environ.get("CROP_MONITOR_URL")
+              or "https://oatmealfarmnetworkcropmonitorbackend-in-151683070823.asia-south1.run.app",
           }
           optional = [
             "GOOGLE_API_KEY", "GEMINI_MODEL", "VERTEX_AI_MODEL",
