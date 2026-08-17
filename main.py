@@ -1,6 +1,6 @@
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from sqlalchemy.orm import Session
 from routers import auth
@@ -153,9 +153,6 @@ from routers import agro_consultations
 from routers import rbac
 
 load_dotenv()
-
-from fastapi import Request
-from fastapi.responses import JSONResponse
 
 ALLOWED_ORIGINS = [
     "http://localhost:5173", "http://localhost:5174", "http://localhost:5175",
@@ -482,13 +479,27 @@ async def _startup_migrations():
     _t = _threading.Thread(target=_expiry_reminder_loop, daemon=True, name="expiry-reminder")
     _t.start()
 
+def _cors_headers_for_request(request: Request) -> dict:
+    origin = (request.headers.get("origin") or "").rstrip("/")
+    if not origin or not _is_allowed_origin(origin):
+        return {}
+    return {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Credentials": "true",
+    }
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers={**_cors_headers_for_request(request), **(exc.headers or {})},
+    )
+
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
     origin = request.headers.get("origin", "")
-    headers = {}
-    if _is_allowed_origin(origin):
-        headers["Access-Control-Allow-Origin"] = origin
-        headers["Access-Control-Allow-Credentials"] = "true"
+    headers = _cors_headers_for_request(request)
     import logging as _logging
     _logging.getLogger("ofn").exception("Unhandled error on %s %s", request.method, request.url.path)
     return JSONResponse(
