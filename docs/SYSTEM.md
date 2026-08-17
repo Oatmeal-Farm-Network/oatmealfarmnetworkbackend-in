@@ -12,7 +12,18 @@ This is the **single source of truth** for how the Oatmeal Farm Network (OFN) pi
 
 ## What OFN Is
 
-Oatmeal Farm Network is a farm operations and marketplace platform. The **frontend** is a React SPA. The **backend** is a FastAPI application that handles authentication, marketplace, events, supply chain, livestock, accounting, and dozens of other domain APIs backed by Azure SQL.
+This is the **India** OFN stack (`oatmealindia` / `asia-south1`). USA OFN remains a separate product.
+
+The **frontend** is a React SPA. The **backend** is a FastAPI application that handles authentication, marketplace, events, supply chain, livestock, accounting, and dozens of other domain APIs backed by Cloud SQL (SQL Server) in **asia-south1**.
+
+India-specific data layers (vs the USA fork):
+
+| Domain | India source |
+|--------|----------------|
+| Commodity / mandi prices | farmer.in / Agmarknet (`COMMODITY_MARKET=india`) |
+| Weather | Open-Meteo, metric (°C / km/h / mm) + monsoon outlook |
+| Crop calendar | Kharif / Rabi / Zaid (`/api/crop-planning/india-calendar`) |
+| Schemes | PM-KISAN, PMFBY, KCC, FPO (`/api/grants`) |
 
 Two specialized backends live inside the backend repo and are typically mounted under the main API:
 

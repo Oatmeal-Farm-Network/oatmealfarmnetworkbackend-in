@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, SmallInteger, DateTime, Date, Text, Boolean, Float
+from sqlalchemy import Column, Integer, String, SmallInteger, DateTime, Date, Text, Boolean, Float, UniqueConstraint
 from sqlalchemy import Numeric as Decimal
 from database import Base
 
@@ -1046,3 +1046,45 @@ class FiscalPeriod(Base):
     PeriodName     = Column(String(50))
     StartDate      = Column(Date)
     EndDate        = Column(Date)
+
+# ── FIELD TWIN CACHE (SoilGrids / external rasters) ────────────
+class FieldExternalDataCache(Base):
+    __tablename__ = "FieldExternalDataCache"
+    __table_args__ = (
+        UniqueConstraint(
+            "FieldID", "Provider", "LocationHash", "DataVersion",
+            name="UX_FieldExternalDataCache_Lookup",
+        ),
+    )
+    CacheID       = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    FieldID       = Column(Integer, index=True, nullable=False)
+    Provider      = Column(String(50), nullable=False)
+    LocationHash  = Column(String(64), nullable=False)
+    BoundaryHash  = Column(String(64))
+    DataVersion   = Column(String(40), default="1")
+    PayloadJSON   = Column(Text)
+    FetchedAt     = Column(DateTime)
+    ExpiresAt     = Column(DateTime)
+    LastAttemptAt = Column(DateTime)
+    LastError     = Column(String(500))
+
+# ── FIELD CROP SOURCE DECISION (grower confirmation) ────────────
+class FieldCropSourceDecision(Base):
+    __tablename__ = "FieldCropSourceDecision"
+    __table_args__ = (
+        UniqueConstraint(
+            "FieldID", "SeasonYear",
+            name="UX_FieldCropSourceDecision_FieldYear",
+        ),
+    )
+    DecisionID              = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    FieldID                 = Column(Integer, index=True, nullable=False)
+    BusinessID              = Column(Integer, index=True, nullable=False)
+    SeasonYear              = Column(Integer, nullable=False)
+    SelectedSource          = Column(String(40), nullable=False)
+    SelectedCrop            = Column(String(255), nullable=False)
+    RecordedCropAtDecision  = Column(String(255))
+    DetectedCropAtDecision  = Column(String(255))
+    CDLCode                 = Column(Integer)
+    DecidedByPeopleID       = Column(Integer)
+    DecidedAt               = Column(DateTime)

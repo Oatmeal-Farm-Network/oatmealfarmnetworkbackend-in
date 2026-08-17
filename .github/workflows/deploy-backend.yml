@@ -89,6 +89,10 @@ jobs:
             "DB_NAME": os.environ["DB_NAME"],
             "DB_LOGIN_TIMEOUT": "30",
             "DB_QUERY_TIMEOUT": "60",
+            # India mandi prices (farmer.in / Agmarknet). Set COMMODITY_MARKET=us to restore USDA/Yahoo.
+            "COMMODITY_MARKET": os.environ.get("COMMODITY_MARKET") or "india",
+            "INDIA_MANDI_PRICES_URL": os.environ.get("INDIA_MANDI_PRICES_URL")
+              or "https://farmer.in/api/open/prices.json",
           }
           optional = [
             "GOOGLE_API_KEY", "GEMINI_MODEL", "VERTEX_AI_MODEL",

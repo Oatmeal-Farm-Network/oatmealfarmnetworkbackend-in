@@ -2,10 +2,16 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from typing import Optional
+import os
 import requests
 from database import get_db
+from auth import get_current_user, assert_business_access
 
 router = APIRouter(prefix="/api", tags=["weather"])
+
+# India default: metric. Set WEATHER_UNITS=imperial to restore °F/mph/inch.
+_UNITS = (os.getenv("WEATHER_UNITS") or "metric").strip().lower()
+_USE_METRIC = _UNITS != "imperial"
 
 
 def _ensure_location_table(db: Session):
@@ -25,7 +31,8 @@ def _ensure_location_table(db: Session):
 
 
 @router.get("/weather/location")
-def get_weather_location(business_id: int = Query(...), db: Session = Depends(get_db)):
+def get_weather_location(business_id: int = Query(...), db: Session = Depends(get_db), user=Depends(get_current_user)):
+    assert_business_access(db, user, business_id)
     _ensure_location_table(db)
     row = db.execute(
         text("SELECT Latitude, Longitude, LocationName, Timezone FROM BusinessLocation WHERE BusinessID = :bid"),
@@ -45,7 +52,9 @@ def save_weather_location(
     location_name: Optional[str] = None,
     timezone: Optional[str] = "auto",
     db: Session = Depends(get_db),
+    user=Depends(get_current_user),
 ):
+    assert_business_access(db, user, business_id)
     _ensure_location_table(db)
     existing = db.execute(
         text("SELECT LocationID FROM BusinessLocation WHERE BusinessID = :bid"),
@@ -104,12 +113,19 @@ def _city_state(lat: float, lon: float) -> tuple[str, str]:
         r = requests.get(
             "https://nominatim.openstreetmap.org/reverse",
             params={"lat": lat, "lon": lon, "format": "json"},
-            headers={"User-Agent": "OatmealFarmNetwork/1.0"},
+            headers={"User-Agent": "OFN-India/1.0"},
             timeout=5,
         )
         if r.status_code == 200:
             addr = r.json().get("address", {})
-            city  = addr.get("city") or addr.get("town") or addr.get("village") or addr.get("county", "")
+            city = (
+                addr.get("city")
+                or addr.get("town")
+                or addr.get("village")
+                or addr.get("county")
+                or addr.get("state_district")
+                or ""
+            )
             state = addr.get("state", "")
             return city, state
     except Exception:
@@ -117,12 +133,33 @@ def _city_state(lat: float, lon: float) -> tuple[str, str]:
     return "", ""
 
 
+def _monsoon_hint(daily_precip_mm: list) -> dict:
+    """Simple India-oriented rainfall outlook from next few days."""
+    vals = [float(p) for p in daily_precip_mm[:5] if p is not None]
+    total = round(sum(vals), 1) if vals else 0.0
+    if total >= 50:
+        level, msg = "heavy", "Heavy rain likely in the next few days — check drainage and delay spray."
+    elif total >= 20:
+        level, msg = "moderate", "Moderate rain expected — plan irrigation around wet days."
+    elif total >= 5:
+        level, msg = "light", "Light rain possible — monitor soil moisture."
+    else:
+        level, msg = "dry", "Little rain in the near-term forecast — irrigation may be needed."
+    return {"level": level, "next_5d_precip_mm": total, "message": msg}
+
+
 @router.get("/weather")
 def get_weather(lat: float, lon: float):
     """
-    Fetch current conditions + hourly + 7-day forecast using Open-Meteo.
-    No API key required. Covers global locations.
+    Current conditions + hourly + 7-day forecast via Open-Meteo.
+    India default: °C, km/h, mm (+ rain / ET0). Legacy keys (temp_f, wind_mph)
+    still present and hold the same numeric values when metric is enabled
+    so older UI keeps working after label changes.
     """
+    temp_unit = "celsius" if _USE_METRIC else "fahrenheit"
+    wind_unit = "kmh" if _USE_METRIC else "mph"
+    precip_unit = "mm" if _USE_METRIC else "inch"
+
     try:
         resp = requests.get(
             "https://api.open-meteo.com/v1/forecast",
@@ -132,12 +169,18 @@ def get_weather(lat: float, lon: float):
                 "current": (
                     "temperature_2m,apparent_temperature,"
                     "relative_humidity_2m,weather_code,"
-                    "wind_speed_10m,wind_direction_10m"
+                    "wind_speed_10m,wind_direction_10m,"
+                    "precipitation"
                 ),
-                "hourly": "temperature_2m,weather_code",
-                "daily": "temperature_2m_max,temperature_2m_min,weather_code",
-                "temperature_unit": "fahrenheit",
-                "wind_speed_unit":  "mph",
+                "hourly": "temperature_2m,weather_code,precipitation",
+                "daily": (
+                    "temperature_2m_max,temperature_2m_min,weather_code,"
+                    "precipitation_sum,et0_fao_evapotranspiration,"
+                    "precipitation_probability_max"
+                ),
+                "temperature_unit": temp_unit,
+                "wind_speed_unit":  wind_unit,
+                "precipitation_unit": precip_unit,
                 "timezone": "auto",
                 "forecast_days": 7,
             },
@@ -154,21 +197,42 @@ def get_weather(lat: float, lon: float):
     hrly = data.get("hourly", {})
     dly  = data.get("daily", {})
 
+    temp = cur.get("temperature_2m")
+    feels = cur.get("apparent_temperature")
+    wind = cur.get("wind_speed_10m")
+    precip_now = cur.get("precipitation")
+
     current = {
-        "temp_f":      cur.get("temperature_2m"),
-        "feelslike_f": cur.get("apparent_temperature"),
-        "wind_mph":    cur.get("wind_speed_10m"),
+        # Preferred India/metric keys
+        "temp_c":      temp,
+        "feelslike_c": feels,
+        "wind_kmh":    wind,
+        "precip_mm":   precip_now,
+        # Legacy keys (same numbers when metric; imperial when WEATHER_UNITS=imperial)
+        "temp_f":      temp,
+        "feelslike_f": feels,
+        "wind_mph":    wind,
         "wind_dir":    _deg_to_compass(cur.get("wind_direction_10m")),
         "humidity":    cur.get("relative_humidity_2m"),
         "condition":   _wmo_label(cur.get("weather_code", 0)),
+        "weather_code": cur.get("weather_code", 0),
         "icon":        None,
     }
 
     times  = hrly.get("time", [])
     temps  = hrly.get("temperature_2m", [])
     wcodes = hrly.get("weather_code", [])
+    hprecip = hrly.get("precipitation", [])
     hourly = [
-        {"time": times[i], "temp_f": temps[i], "icon": None, "condition": _wmo_label(wcodes[i])}
+        {
+            "time": times[i],
+            "temp_c": temps[i],
+            "temp_f": temps[i],
+            "precip_mm": hprecip[i] if i < len(hprecip) else None,
+            "icon": None,
+            "condition": _wmo_label(wcodes[i]),
+            "weather_code": wcodes[i],
+        }
         for i in range(min(24, len(times)))
     ]
 
@@ -176,25 +240,52 @@ def get_weather(lat: float, lon: float):
     highs  = dly.get("temperature_2m_max", [])
     lows   = dly.get("temperature_2m_min", [])
     dcodes = dly.get("weather_code", [])
+    dprecip = dly.get("precipitation_sum", [])
+    det0 = dly.get("et0_fao_evapotranspiration", [])
+    dprob = dly.get("precipitation_probability_max", [])
     daily  = [
         {
             "date":      dates[i],
+            "high_c":    highs[i],
+            "low_c":     lows[i],
             "high_f":    highs[i],
             "low_f":     lows[i],
+            "precip_mm": dprecip[i] if i < len(dprecip) else None,
+            "et0_mm":    det0[i] if i < len(det0) else None,
+            "precip_prob": dprob[i] if i < len(dprob) else None,
             "condition": _wmo_label(dcodes[i]),
+            "weather_code": dcodes[i],
             "icon":      None,
         }
         for i in range(min(7, len(dates)))
     ]
 
-    today = {"high_f": daily[0]["high_f"], "low_f": daily[0]["low_f"]} if daily else {}
+    today = {}
+    if daily:
+        today = {
+            "high_c": daily[0]["high_c"],
+            "low_c": daily[0]["low_c"],
+            "high_f": daily[0]["high_f"],
+            "low_f": daily[0]["low_f"],
+            "precip_mm": daily[0].get("precip_mm"),
+            "et0_mm": daily[0].get("et0_mm"),
+        }
 
     city, state = _city_state(lat, lon)
+    monsoon = _monsoon_hint([d.get("precip_mm") for d in daily])
 
     return {
         "location": {"city": city, "state": state},
+        "units": {
+            "temperature": "C" if _USE_METRIC else "F",
+            "wind": "kmh" if _USE_METRIC else "mph",
+            "precip": "mm" if _USE_METRIC else "inch",
+            "et0": "mm" if _USE_METRIC else "inch",
+        },
         "current":  current,
         "today":    today,
         "hourly":   hourly,
         "daily":    daily,
+        "monsoon":  monsoon,
+        "source":   "Open-Meteo",
     }

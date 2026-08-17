@@ -35,18 +35,20 @@ router = APIRouter(prefix="/api", tags=["climate-forecast"])
 # Stress thresholds — published agronomy values, deliberately conservative.
 # We surface ranges, not single magic numbers, so the UI can show severity.
 # ───────────────────────────────────────────────────────────────────────────
-HEAT_F_WARN     = 90.0   # sustained 3+ h
-HEAT_F_SEVERE   = 95.0   # any single hour
-HEAT_F_CRITICAL = 100.0
-COLD_F_WARN     = 38.0   # damaging to flowering berries / strawberries
-FROST_F         = 32.0
-HARD_FROST_F    = 28.0
+# India metric thresholds (°C / km/h / mm). Legacy *_F / *_MPH / *_IN names kept
+# so event detectors below need only unit-param changes.
+HEAT_F_WARN     = 32.0   # ~90°F sustained 3+ h
+HEAT_F_SEVERE   = 35.0   # ~95°F any single hour
+HEAT_F_CRITICAL = 38.0   # ~100°F
+COLD_F_WARN     = 3.0    # flowering / chill-sensitive crops
+FROST_F         = 0.0
+HARD_FROST_F    = -2.0
 VPD_KPA_WARN    = 1.5    # drought stress in most leafy crops
 VPD_KPA_SEVERE  = 2.5
-WIND_MPH_WARN   = 20.0   # tunnel-secure threshold
-WIND_MPH_SEVERE = 35.0
-RAIN_IN_24H_WARN   = 1.0
-RAIN_IN_24H_SEVERE = 2.0
+WIND_MPH_WARN   = 32.0   # ~20 mph tunnel-secure threshold (km/h)
+WIND_MPH_SEVERE = 56.0   # ~35 mph
+RAIN_IN_24H_WARN   = 25.0   # mm (~1 in)
+RAIN_IN_24H_SEVERE = 50.0   # mm (~2 in)
 
 
 # Simple, conservative crop sensitivities. Anything not listed falls back to
@@ -62,8 +64,18 @@ CROP_SENSITIVITY = {
     "lettuce":    {"heat_sensitive": True,  "frost_sensitive": False, "rain_split_risk": False, "tunnel_typical": True},
     "spinach":    {"heat_sensitive": True,  "frost_sensitive": False, "rain_split_risk": False, "tunnel_typical": True},
     "corn":       {"heat_sensitive": False, "frost_sensitive": True,  "rain_split_risk": False, "tunnel_typical": False},
+    "maize":      {"heat_sensitive": False, "frost_sensitive": True,  "rain_split_risk": False, "tunnel_typical": False},
     "soybean":    {"heat_sensitive": False, "frost_sensitive": True,  "rain_split_risk": False, "tunnel_typical": False},
     "wheat":      {"heat_sensitive": False, "frost_sensitive": True,  "rain_split_risk": False, "tunnel_typical": False},
+    "rice":       {"heat_sensitive": False, "frost_sensitive": True,  "rain_split_risk": False, "tunnel_typical": False},
+    "cotton":     {"heat_sensitive": False, "frost_sensitive": True,  "rain_split_risk": False, "tunnel_typical": False},
+    "sugarcane":  {"heat_sensitive": False, "frost_sensitive": True,  "rain_split_risk": False, "tunnel_typical": False},
+    "groundnut":  {"heat_sensitive": False, "frost_sensitive": True,  "rain_split_risk": False, "tunnel_typical": False},
+    "mustard":    {"heat_sensitive": False, "frost_sensitive": True,  "rain_split_risk": False, "tunnel_typical": False},
+    "chilli":     {"heat_sensitive": True,  "frost_sensitive": True,  "rain_split_risk": True,  "tunnel_typical": False},
+    "onion":      {"heat_sensitive": False, "frost_sensitive": True,  "rain_split_risk": False, "tunnel_typical": False},
+    "potato":     {"heat_sensitive": True,  "frost_sensitive": True,  "rain_split_risk": False, "tunnel_typical": False},
+    "turmeric":   {"heat_sensitive": False, "frost_sensitive": True,  "rain_split_risk": False, "tunnel_typical": False},
 }
 DEFAULT_PROFILE = {"heat_sensitive": True, "frost_sensitive": True, "rain_split_risk": False, "tunnel_typical": False}
 
@@ -97,9 +109,9 @@ def _fetch_hourly_forecast(lat: float, lon: float) -> Optional[dict]:
                     "vapour_pressure_deficit",
                     "shortwave_radiation",
                 ]),
-                "temperature_unit":   "fahrenheit",
-                "wind_speed_unit":    "mph",
-                "precipitation_unit": "inch",
+                "temperature_unit":   "celsius",
+                "wind_speed_unit":    "kmh",
+                "precipitation_unit": "mm",
                 "timezone":           "UTC",
                 "forecast_days":      7,
             },
@@ -216,7 +228,7 @@ def _detect_events(rows: List[dict], crop_type: Optional[str], profile: dict) ->
         else:
             severity = "warn"
         actions = [
-            f"Open tunnel side-walls and roll up shade cloth ahead of {rows[s]['hours_out']}h-out window (peak {peak:.0f}°F).",
+            f"Open tunnel side-walls and roll up shade cloth ahead of {rows[s]['hours_out']}h-out window (peak {peak:.0f}°C).",
             "Schedule a deep pre-cool irrigation 12h before onset to lower canopy temperature and refresh soil-water reserves.",
         ]
         if profile["tunnel_typical"]:
@@ -224,8 +236,8 @@ def _detect_events(rows: List[dict], crop_type: Optional[str], profile: dict) ->
         if profile["heat_sensitive"] and crop_label.lower() in ("blueberry", "strawberry", "raspberry", "lettuce", "spinach"):
             actions.append(f"{crop_label.capitalize()} is heat-sensitive — consider an early-morning emergency pick if peak hits during the harvest window.")
         events.append(_build_event(
-            rows, s, e, "heatwave", severity, peak, "°F",
-            f"Sustained heat ≥{HEAT_F_WARN:.0f}°F for {e - s + 1}h drives canopy stress and pollen abortion in many fruit/veg crops.",
+            rows, s, e, "heatwave", severity, peak, "°C",
+            f"Sustained heat ≥{HEAT_F_WARN:.0f}°C for {e - s + 1}h drives canopy stress and pollen abortion in many fruit/veg crops.",
             actions,
         ))
 
@@ -235,14 +247,14 @@ def _detect_events(rows: List[dict], crop_type: Optional[str], profile: dict) ->
         peak = _peak(rows, s, e, "temp_f", "min") or FROST_F
         severity = "critical" if peak <= HARD_FROST_F else "severe"
         actions = [
-            f"Activate frost-protection irrigation by {max(0, rows[s]['hours_out'] - 2)}h-out so the ice-release latent heat keeps tissue at 32°F.",
+            f"Activate frost-protection irrigation by {max(0, rows[s]['hours_out'] - 2)}h-out so the ice-release latent heat keeps tissue near 0°C.",
             "If overhead irrigation isn't an option, deploy row-covers/floating fabric before sundown the night before.",
         ]
         if profile["tunnel_typical"]:
             actions.append("Close all tunnel vents and side-walls before sunset; consider portable propane heaters for a hard freeze.")
         events.append(_build_event(
-            rows, s, e, "frost", severity, peak, "°F",
-            f"Air temp expected to drop to {peak:.0f}°F — frost-sensitive crops at risk of flower/young-fruit damage.",
+            rows, s, e, "frost", severity, peak, "°C",
+            f"Air temp expected to drop to {peak:.0f}°C — frost-sensitive crops at risk of flower/young-fruit damage.",
             actions,
         ))
 
@@ -257,8 +269,8 @@ def _detect_events(rows: List[dict], crop_type: Optional[str], profile: dict) ->
             continue  # skip if a frost in same window already covers it
         low = _peak(rows, s, e, "temp_f", "min") or COLD_F_WARN
         events.append(_build_event(
-            rows, s, e, "cold_snap", "warn", low, "°F",
-            f"Cold spell to {low:.0f}°F stalls warm-season growth and can damage flowering berries.",
+            rows, s, e, "cold_snap", "warn", low, "°C",
+            f"Cold spell to {low:.0f}°C stalls warm-season growth and can damage flowering berries.",
             ["Delay any planned tunnel ventilation; close end-walls overnight to retain heat.",
              "Hold off on foliar sprays — uptake is slow at this temperature."],
         ))
@@ -304,8 +316,8 @@ def _detect_events(rows: List[dict], crop_type: Optional[str], profile: dict) ->
             if profile["tunnel_typical"]:
                 actions.append("Close tunnel vents and secure plastic; check anchoring against wind gusts that often accompany the front.")
             events.append(_build_event(
-                rows, max24_idx, end_i, "heavy_rain", severity, round(max24, 2), "in (24h)",
-                f"Rolling 24-hour rainfall peaks at {max24:.2f} in — soil saturation and fruit-split risk.",
+                rows, max24_idx, end_i, "heavy_rain", severity, round(max24, 2), "mm (24h)",
+                f"Rolling 24-hour rainfall peaks at {max24:.1f} mm — soil saturation and fruit-split risk.",
                 actions,
             ))
 
@@ -321,8 +333,8 @@ def _detect_events(rows: List[dict], crop_type: Optional[str], profile: dict) ->
         if profile["tunnel_typical"]:
             actions.append("Close end-walls and zipper doors; high-tunnel plastic is most likely to tear at peak gust hour.")
         events.append(_build_event(
-            rows, s, e, "high_wind", severity, round(peak, 1), "mph",
-            f"Wind sustained ≥{WIND_MPH_WARN:.0f} mph (peak {peak:.0f} mph) — structural stress and spray-drift risk.",
+            rows, s, e, "high_wind", severity, round(peak, 1), "km/h",
+            f"Wind sustained ≥{WIND_MPH_WARN:.0f} km/h (peak {peak:.0f} km/h) — structural stress and spray-drift risk.",
             actions,
         ))
 

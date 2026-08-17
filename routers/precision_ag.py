@@ -11,6 +11,9 @@ import requests
 from pydantic import BaseModel, validator
 from typing import Optional
 from geo_utils import polygon_area_hectares
+from auth import get_current_user
+from precision_ag_auth import _verify_business_access, _verify_field_access
+from field_twin.config import crop_monitor_url
 
 router = APIRouter(prefix="/api", tags=["precision-ag"])
 
@@ -41,14 +44,65 @@ def _ensure_field_profile_table(db: Session):
     db.commit()
     _field_profile_ready = True
 
-CROP_MONITOR_URL = os.getenv(
-    "CROP_MONITOR_URL",
-    "https://oatmealfarmnetworkcropmonitorbackend-git-802455386518.us-central1.run.app"
-    if os.getenv("GAE_ENV") or os.getenv("K_SERVICE")
-    else "http://127.0.0.1:8002",
-)
+CROP_MONITOR_URL = crop_monitor_url()
 BIOMASS_GCS_BUCKET = os.getenv("BIOMASS_GCS_BUCKET", "oatmeal-farm-network-images")
 BIOMASS_GCS_PREFIX = os.getenv("BIOMASS_GCS_PREFIX", "biomass-uploads")
+
+
+def _india_season_payload(d=None):
+    d = d or date.today()
+    month = int(d.month)
+    if 6 <= month <= 10:
+        return {"id": "kharif", "label": "Kharif", "months": "Jun–Oct"}
+    if month == 11 or month == 12 or month <= 3:
+        return {"id": "rabi", "label": "Rabi", "months": "Nov–Mar"}
+    return {"id": "zaid", "label": "Zaid", "months": "Mar–Jun"}
+
+
+def _season_crop_lookup(db: Session, business_id: int, year: int) -> dict:
+    """Current-year rotation + grower confirm, keyed by FieldID. Safe if tables missing."""
+    out = {}
+    try:
+        rot_rows = db.execute(text("""
+            SELECT FieldID, CropName, PlantingDate, SeasonYear
+            FROM CropRotationEntry
+            WHERE BusinessID = :bid
+        """), {"bid": business_id}).fetchall()
+        best = {}
+        for r in rot_rows:
+            fid = int(r.FieldID)
+            prev = best.get(fid)
+            score = (0 if r.SeasonYear == year else 1, -(r.SeasonYear or 0))
+            prev_score = prev[0] if prev else (9, 0)
+            if score < prev_score:
+                best[fid] = (score, r)
+        for fid, (_, r) in best.items():
+            out[fid] = {
+                "rotation_crop": r.CropName,
+                "season_planting_date": str(r.PlantingDate) if r.PlantingDate else None,
+                "rotation_year": r.SeasonYear,
+            }
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    try:
+        dec_rows = db.execute(text("""
+            SELECT FieldID, SelectedCrop
+            FROM FieldCropSourceDecision
+            WHERE BusinessID = :bid AND SeasonYear = :yr
+        """), {"bid": business_id, "yr": year}).fetchall()
+        for r in dec_rows:
+            rec = out.setdefault(int(r.FieldID), {})
+            rec["crop_confirmed"] = True
+            rec["season_crop"] = r.SelectedCrop
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    return out
 
 
 class FieldCreate(BaseModel):
@@ -78,7 +132,12 @@ class FieldCreate(BaseModel):
 
 
 @router.get("/fields")
-def get_fields(business_id: int, db: Session = Depends(get_db)):
+def get_fields(
+    business_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    _verify_business_access(db, user.PeopleID, business_id)
     try:
         # Join each field to its latest row in dbo.Analysis via OUTER APPLY so
         # the dashboard can show the most recent health score without an
@@ -103,6 +162,12 @@ def get_fields(business_id: int, db: Session = Depends(get_db)):
             ORDER BY F.Name
         """), {"bid": business_id}).fetchall()
 
+        season = _india_season_payload()
+        crop_map = _season_crop_lookup(db, business_id, date.today().year)
+
+        def _crop_bits(fid):
+            return crop_map.get(int(fid)) or {}
+
         return [
             {
                 "fieldid":                  r.FieldID,
@@ -122,6 +187,14 @@ def get_fields(business_id: int, db: Session = Depends(get_db)):
                 "latest_analysis_date":     r.LatestAnalysisDate.isoformat() if r.LatestAnalysisDate else None,
                 "latest_health_score":      int(r.LatestHealthScore) if r.LatestHealthScore is not None else None,
                 "latest_status":            r.LatestStatus,
+                "india_season":             season,
+                "rotation_crop":            _crop_bits(r.FieldID).get("rotation_crop"),
+                "season_crop":              _crop_bits(r.FieldID).get("season_crop")
+                    or _crop_bits(r.FieldID).get("rotation_crop")
+                    or r.CropType,
+                "season_planting_date":     _crop_bits(r.FieldID).get("season_planting_date")
+                    or (str(r.PlantingDate) if r.PlantingDate else None),
+                "crop_confirmed":           bool(_crop_bits(r.FieldID).get("crop_confirmed")),
             }
             for r in rows
         ]
@@ -183,7 +256,13 @@ def create_field(field: FieldCreate, db: Session = Depends(get_db)):
 
 
 @router.put("/fields/{field_id}")
-def update_field(field_id: int, field: FieldCreate, db: Session = Depends(get_db)):
+def update_field(
+    field_id: int,
+    field: FieldCreate,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    _verify_field_access(db, user.PeopleID, field_id)
     try:
         existing = (
             db.query(models.Field)

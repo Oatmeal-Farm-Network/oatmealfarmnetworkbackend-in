@@ -2,15 +2,49 @@
 CSA Advanced — Membership, BoxBot, Vacation Holds, Pickup Sites,
 Newsletters, Crop Progress, Box Labels, Harvest Allocation.
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import get_db
 from typing import Optional
 import json
 from datetime import date, datetime
+from auth import get_current_user, assert_business_access
 
-router = APIRouter(prefix="/api/csa-advanced", tags=["csa-advanced"])
+_ID_LOOKUPS = (
+    ("contract_id", "SELECT BusinessID FROM CSAContracts WHERE ContractID=:id"),
+    ("plan_id", "SELECT BusinessID FROM CSAPaymentPlans WHERE PlanID=:id"),
+    ("ws_id", "SELECT BusinessID FROM CSAWorkShares WHERE WorkShareID=:id"),
+    ("hold_id", "SELECT BusinessID FROM CSAVacationHolds WHERE HoldID=:id"),
+    ("site_id", "SELECT BusinessID FROM CSAPickupSites WHERE SiteID=:id"),
+    ("progress_id", "SELECT BusinessID FROM CSACropProgress WHERE ProgressID=:id"),
+    ("pref_id", "SELECT BusinessID FROM CSASharePreferences WHERE PrefID=:id"),
+    ("assignment_id", "SELECT BusinessID FROM CSASiteAssignments WHERE AssignmentID=:id"),
+    ("run_id", "SELECT BusinessID FROM CSABoxBotRuns WHERE RunID=:id"),
+    ("subscription_id", "SELECT BusinessID FROM CSASubscriptions WHERE SubscriptionID=:id"),
+)
+
+
+def require_csa_access(
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    params = request.path_params
+    if "business_id" in params:
+        assert_business_access(db, user, int(params["business_id"]))
+        return user
+    for key, sql in _ID_LOOKUPS:
+        if key in params:
+            row = db.execute(text(sql), {"id": int(params[key])}).first()
+            if not row:
+                raise HTTPException(status_code=404, detail="Not found")
+            assert_business_access(db, user, int(row[0]))
+            return user
+    return user
+
+
+router = APIRouter(tags=["csa-advanced"], dependencies=[Depends(require_csa_access)])
 
 
 # ── Table creation ────────────────────────────────────────────────────────────
@@ -239,7 +273,6 @@ def _require_business(business_id: int, db: Session):
 
 # ── Startup ───────────────────────────────────────────────────────────────────
 
-from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 
 _tables_created = False

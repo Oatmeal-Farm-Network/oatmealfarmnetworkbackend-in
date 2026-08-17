@@ -7,7 +7,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db, engine
+from database import get_db, engine, run_startup_ddl
 from auth import get_current_user
 from pydantic import BaseModel
 from typing import Optional
@@ -15,29 +15,33 @@ import os
 
 router = APIRouter(prefix="/api/provenance", tags=["provenance"])
 
-with engine.begin() as _conn:
-    _conn.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='ProvenanceRecords')
-        BEGIN
-            CREATE TABLE ProvenanceRecords (
-                RecordID              INT IDENTITY(1,1) PRIMARY KEY,
-                BusinessID            INT           NOT NULL,
-                ListingType           VARCHAR(20)   NOT NULL,
-                ListingSourceID       INT           NOT NULL,
-                FieldIDs              NVARCHAR(200) NULL,
-                GrowMethod            NVARCHAR(200) NULL,
-                InputsUsed            NVARCHAR(500) NULL,
-                HarvestDate           DATE          NULL,
-                SustainabilityNotes   NVARCHAR(MAX) NULL,
-                AIGeneratedNarrative  NVARCHAR(MAX) NULL,
-                NarrativeGeneratedAt  DATETIME      NULL,
-                CreatedAt             DATETIME      NOT NULL DEFAULT GETDATE(),
-                UpdatedAt             DATETIME      NOT NULL DEFAULT GETDATE()
-            )
-            CREATE UNIQUE INDEX IX_Provenance_Listing
-                ON ProvenanceRecords (BusinessID, ListingType, ListingSourceID)
-        END
-    """))
+def _ensure_provenance_table():
+    with engine.begin() as _conn:
+        _conn.execute(text("""
+            IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='ProvenanceRecords')
+            BEGIN
+                CREATE TABLE ProvenanceRecords (
+                    RecordID              INT IDENTITY(1,1) PRIMARY KEY,
+                    BusinessID            INT           NOT NULL,
+                    ListingType           VARCHAR(20)   NOT NULL,
+                    ListingSourceID       INT           NOT NULL,
+                    FieldIDs              NVARCHAR(200) NULL,
+                    GrowMethod            NVARCHAR(200) NULL,
+                    InputsUsed            NVARCHAR(500) NULL,
+                    HarvestDate           DATE          NULL,
+                    SustainabilityNotes   NVARCHAR(MAX) NULL,
+                    AIGeneratedNarrative  NVARCHAR(MAX) NULL,
+                    NarrativeGeneratedAt  DATETIME      NULL,
+                    CreatedAt             DATETIME      NOT NULL DEFAULT GETDATE(),
+                    UpdatedAt             DATETIME      NOT NULL DEFAULT GETDATE()
+                )
+                CREATE UNIQUE INDEX IX_Provenance_Listing
+                    ON ProvenanceRecords (BusinessID, ListingType, ListingSourceID)
+            END
+        """))
+
+
+run_startup_ddl("provenance", _ensure_provenance_table)
 
 
 class ProvenanceUpsert(BaseModel):

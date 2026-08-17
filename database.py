@@ -8,6 +8,9 @@ import pymssql
 
 load_dotenv()
 
+# Import-time DDL must not hang when local .env has no Cloud SQL host.
+_DB_CONFIGURED = bool((os.getenv("DB_SERVER") or "").strip())
+
 SQLALCHEMY_DATABASE_URL = (
     f"mssql+pymssql://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}"
     f"@{os.getenv('DB_SERVER')}/{os.getenv('DB_NAME')}"
@@ -28,8 +31,41 @@ engine = create_engine(
     connect_args={"timeout": _DB_QUERY_TIMEOUT, "login_timeout": _DB_LOGIN_TIMEOUT},
 )
 
+if not _DB_CONFIGURED:
+    from contextlib import contextmanager
+
+    class _NoDbConn:
+        def execute(self, *a, **k):
+            return None
+
+        def commit(self):
+            return None
+
+        def close(self):
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    @contextmanager
+    def _no_db_begin(*_a, **_k):
+        print("DB_SERVER unset; skipping import-time SQL")
+        yield _NoDbConn()
+
+    engine.begin = _no_db_begin
+    engine.connect = _no_db_begin
+
 # Declarative base
 Base = declarative_base()
+
+if not _DB_CONFIGURED:
+    def _skip_create_all(*_a, **_k):
+        return None
+
+    Base.metadata.create_all = _skip_create_all
 
 # Session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -41,6 +77,8 @@ def run_startup_ddl(label: str, fn):
     Incomplete BAK restores (or missing tables) must not prevent Cloud Run
     from binding PORT=8080.
     """
+    if not _DB_CONFIGURED:
+        return
     try:
         fn()
     except Exception as e:

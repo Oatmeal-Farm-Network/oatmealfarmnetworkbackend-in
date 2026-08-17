@@ -9,8 +9,11 @@ from pydantic import BaseModel
 from typing import Optional
 from database import get_db
 from datetime import datetime, date
-import json, csv, io, os, requests
+import json, csv, io, requests
 import models
+from auth import get_current_user
+from precision_ag_auth import _verify_field_access
+from field_twin.config import crop_monitor_url
 
 router = APIRouter(prefix="/api", tags=["precision-ag-features"])
 
@@ -29,12 +32,7 @@ _CROP_BASELINES = {
     "default": {"yield_kgha": 5000,  "gdd_base_f": 50, "kc": 1.0},
 }
 
-CROP_MONITOR_URL = os.getenv(
-    "CROP_MONITOR_URL",
-    "https://oatmealfarmnetworkcropmonitorbackend-git-802455386518.us-central1.run.app"
-    if os.getenv("GAE_ENV") or os.getenv("K_SERVICE")
-    else "http://127.0.0.1:8002",
-)
+CROP_MONITOR_URL = crop_monitor_url()
 
 # ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -119,7 +117,8 @@ def _ser_scout(row) -> dict:
 
 
 @router.get("/fields/{field_id}/scouts")
-def get_scouts(field_id: int, db: Session = Depends(get_db)):
+def get_scouts(field_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    _verify_field_access(db, user.PeopleID, field_id)
     _field_or_404(field_id, db)
     rows = (
         db.query(models.FieldScout)
@@ -131,7 +130,8 @@ def get_scouts(field_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/fields/{field_id}/scouts")
-def create_scout(field_id: int, body: dict, db: Session = Depends(get_db)):
+def create_scout(field_id: int, body: dict, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    _verify_field_access(db, user.PeopleID, field_id)
     field = _field_or_404(field_id, db)
     try:
         observed_at = datetime.fromisoformat(body["observed_at"].replace("Z", "")) if body.get("observed_at") else datetime.utcnow()
@@ -140,7 +140,7 @@ def create_scout(field_id: int, body: dict, db: Session = Depends(get_db)):
     row = models.FieldScout(
         FieldID    = field_id,
         BusinessID = field.BusinessID,
-        PeopleID   = body.get("people_id"),
+        PeopleID   = user.PeopleID,
         ObservedAt = observed_at,
         Category   = body.get("category", "General"),
         Severity   = body.get("severity"),
@@ -157,7 +157,8 @@ def create_scout(field_id: int, body: dict, db: Session = Depends(get_db)):
 
 
 @router.delete("/fields/{field_id}/scouts/{scout_id}")
-def delete_scout(field_id: int, scout_id: int, db: Session = Depends(get_db)):
+def delete_scout(field_id: int, scout_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    _verify_field_access(db, user.PeopleID, field_id)
     row = db.query(models.FieldScout).filter(
         models.FieldScout.ScoutID == scout_id,
         models.FieldScout.FieldID == field_id,
@@ -512,8 +513,8 @@ def get_field_weather(field_id: int, days: int = 30, db: Session = Depends(get_d
                 "latitude":  lat,
                 "longitude": lon,
                 "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum,et0_fao_evapotranspiration",
-                "temperature_unit": "fahrenheit",
-                "precipitation_unit": "inch",
+                "temperature_unit": "celsius",
+                "precipitation_unit": "mm",
                 "timezone": "auto",
                 "past_days": days,
                 "forecast_days": 7,
@@ -537,7 +538,13 @@ def get_field_weather(field_id: int, days: int = 30, db: Session = Depends(get_d
                 "precip":   precip[i]   if i < len(precip)   else None,
                 "et0":      et0[i]      if i < len(et0)      else None,
             })
-        return {"field_id": field_id, "lat": lat, "lon": lon, "daily": result}
+        return {
+            "field_id": field_id,
+            "lat": lat,
+            "lon": lon,
+            "units": {"temperature": "C", "precip": "mm", "et0": "mm"},
+            "daily": result,
+        }
     except requests.RequestException as e:
         raise HTTPException(status_code=502, detail=f"Weather service error: {e}")
 
@@ -871,7 +878,7 @@ def get_irrigation(field_id: int, days: int = 30, db: Session = Depends(get_db))
                 "latitude":  lat,
                 "longitude": lon,
                 "daily": "precipitation_sum,et0_fao_evapotranspiration",
-                "precipitation_unit": "inch",
+                "precipitation_unit": "mm",
                 "timezone": "auto",
                 "past_days": days,
                 "forecast_days": 7,
@@ -907,10 +914,10 @@ def get_irrigation(field_id: int, days: int = 30, db: Session = Depends(get_db))
 
     # recommendation based on last 7 days cumulative deficit
     recent_deficit = result[-7]["cumulative_deficit_in"] if len(result) >= 7 else cumulative_deficit
-    if recent_deficit >= 1.5:
+    if recent_deficit >= 38.0:  # ~1.5 in → mm
         recommendation = "Irrigate now"
         urgency = "high"
-    elif recent_deficit >= 0.75:
+    elif recent_deficit >= 19.0:  # ~0.75 in → mm
         recommendation = "Consider irrigating within 2–3 days"
         urgency = "medium"
     else:
@@ -921,6 +928,7 @@ def get_irrigation(field_id: int, days: int = 30, db: Session = Depends(get_db))
         "field_id":          field_id,
         "crop_type":         field.CropType,
         "kc":                kc,
+        "units":             {"precip": "mm", "et0": "mm", "deficit": "mm"},
         "recommendation":    recommendation,
         "urgency":           urgency,
         "cumulative_deficit_in": round(cumulative_deficit, 3),

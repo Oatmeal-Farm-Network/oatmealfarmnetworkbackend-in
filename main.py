@@ -16,6 +16,7 @@ from routers import field_maturity
 from routers import climate_forecast
 from routers import field_assessment_report
 from routers import crop_monitor_proxy
+from routers import field_twin
 from routers import plant_knowledgebase
 from routers import crop_summary
 from routers import ingredient_knowledgebase
@@ -157,17 +158,8 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 ALLOWED_ORIGINS = [
-    "http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "http://localhost:5176", "http://localhost:5177", "http://localhost:3000",
-    "https://oatmealfarmnetwork-802455386518.us-central1.run.app",
-    "https://oatmealfarmnewtorkbackend-802455386518.us-central1.run.app",
-    "https://crop-detection-dcecevhvh5ard2ah.eastus-01.azurewebsites.net",
-    "https://www.oatmealfarmnetwork.com", "https://oatmealfarmnetwork.com",
-    "https://lkm-802455386518.us-central1.run.app",
-    "https://lkm-mt7mh6zhoa-uc.a.run.app",
-    "https://lkm-frontend-802455386518.us-central1.run.app",
-    "https://lkm-frontend-mt7mh6zhoa-uc.a.run.app",
-    "https://www.lkmcpa.com", "https://lkmcpa.com",
-    "https://www.islandcpas.com", "https://islandcpas.com",
+    "http://localhost:5173", "http://localhost:5174", "http://localhost:5175",
+    "http://localhost:5176", "http://localhost:5177", "http://localhost:3000",
     # India Cloud Run (both URL formats)
     "https://oatmealfarmnetwork-in-qamcakkjnq-el.a.run.app",
     "https://oatmealfarmnetwork-in-151683070823.asia-south1.run.app",
@@ -497,9 +489,11 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     if _is_allowed_origin(origin):
         headers["Access-Control-Allow-Origin"] = origin
         headers["Access-Control-Allow-Credentials"] = "true"
+    import logging as _logging
+    _logging.getLogger("ofn").exception("Unhandled error on %s %s", request.method, request.url.path)
     return JSONResponse(
         status_code=500,
-        content={"detail": f"Internal server error: {str(exc)}"},
+        content={"detail": "Internal server error"},
         headers=headers,
     )
 
@@ -514,6 +508,7 @@ app.include_router(field_maturity.router)
 app.include_router(climate_forecast.router)
 app.include_router(field_assessment_report.router)
 app.include_router(crop_monitor_proxy.router)
+app.include_router(field_twin.router)
 app.include_router(plant_knowledgebase.router)
 app.include_router(crop_summary.router)
 app.include_router(ingredient_knowledgebase.router)
@@ -532,13 +527,15 @@ app.include_router(food_wanted_router, prefix="/api/food-wanted")
 app.include_router(notifications.router)
 app.include_router(mill.router)
 app.include_router(job_board.router)
-app.include_router(csa.router)
+app.include_router(csa.router, prefix="/api/csa")
+app.include_router(csa.router, prefix="/api/fpo")
 app.include_router(land_leasing.router)
 app.include_router(certifications.router)
 app.include_router(supplier_directory.router)
 app.include_router(grants.router)
 app.include_router(education.router)
-app.include_router(csa_advanced.router)
+app.include_router(csa_advanced.router, prefix="/api/csa-advanced")
+app.include_router(csa_advanced.router, prefix="/api/fpo-advanced")
 app.include_router(forgot_password.router)
 app.include_router(weather.router)
 app.include_router(notes.router)
@@ -672,7 +669,7 @@ def dynamic_sitemap(db: Session = Depends(get_db)):
     from sqlalchemy import text
     from datetime import datetime
 
-    BASE = "https://oatmealfarmnetwork.com"
+    BASE = (os.getenv("FRONTEND_URL") or "https://oatmealfarmnetwork-in-151683070823.asia-south1.run.app").split(",")[0].strip().rstrip("/")
     today = datetime.utcnow().strftime("%Y-%m-%d")
 
     static_pages = [
@@ -692,7 +689,8 @@ def dynamic_sitemap(db: Session = Depends(get_db)):
         ("/marketplace/products",          "weekly",  "0.7"),
         ("/marketplaces/food-wanted",      "weekly",  "0.6"),
         ("/marketplaces/equipment",        "weekly",  "0.6"),
-        ("/contact-us",                    "yearly",  "0.5"),
+        ("/commodity-prices",               "daily",   "0.8"),
+        ("/grants",                         "weekly",  "0.7"),
         ("/signup",                        "yearly",  "0.6"),
         ("/login",                         "yearly",  "0.5"),
     ]
@@ -785,21 +783,29 @@ def dynamic_sitemap(db: Session = Depends(get_db)):
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok"}
+    return {"status": "ok", "market": "india"}
+
+
+def _debug_enabled() -> bool:
+    return (os.getenv("OFN_DEBUG_ENDPOINTS") or "").strip().lower() in ("1", "true", "yes")
 
 
 @app.get("/test-env")
 def test_env():
+    if not _debug_enabled():
+        return JSONResponse(status_code=404, content={"detail": "Not found"})
     return {
         "server": os.getenv("DB_SERVER"),
         "database": os.getenv("DB_NAME"),
         "user": os.getenv("DB_USER"),
-        "password_set": bool(os.getenv("DB_PASSWORD"))
+        "password_set": bool(os.getenv("DB_PASSWORD")),
     }
 
 
 @app.get("/test-db")
 def test_db(db: Session = Depends(get_db)):
+    if not _debug_enabled():
+        return JSONResponse(status_code=404, content={"detail": "Not found"})
     from sqlalchemy import text
     result = db.execute(text("SELECT 1")).fetchone()
     return {"db": "connected", "result": str(result)}
@@ -807,6 +813,8 @@ def test_db(db: Session = Depends(get_db)):
 
 @app.get("/test-people2")
 def test_people2():
+    if not _debug_enabled():
+        return JSONResponse(status_code=404, content={"detail": "Not found"})
     from sqlalchemy import text
     db = SessionLocal()
     try:

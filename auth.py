@@ -1,8 +1,10 @@
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from jose import JWTError, jwt
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 import bcrypt as _bcrypt
 from database import get_db
 import models
@@ -12,12 +14,17 @@ from dotenv import load_dotenv
 # Load .env before reading env vars so SECRET_KEY is always the real key
 load_dotenv()
 
-SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-production")
+_secret = (os.getenv("SECRET_KEY") or "").strip()
+if not _secret:
+    if os.getenv("K_SERVICE") or os.getenv("GOOGLE_CLOUD_PROJECT"):
+        raise RuntimeError("SECRET_KEY must be set in Cloud Run / production")
+    _secret = "change-me-in-production"
+SECRET_KEY = _secret
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 30  # 30 days
 PASSWORD_RESET_EXPIRE_MINUTES = 60  # 1 hour
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
 
 
 def hash_password(password: str) -> str:
@@ -64,7 +71,8 @@ def create_access_token(data: dict) -> str:
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 def get_current_user(
-    token: str = Depends(oauth2_scheme),
+    request: Request,
+    token: Optional[str] = Depends(oauth2_scheme),
     db: Session = Depends(get_db)
 ):
     credentials_exception = HTTPException(
@@ -72,8 +80,11 @@ def get_current_user(
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    raw = token or request.cookies.get("ofn_access_token")
+    if not raw:
+        raise credentials_exception
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(raw, SECRET_KEY, algorithms=[ALGORITHM])
         sub = payload.get("sub")
         if sub is None:
             raise credentials_exception
@@ -89,3 +100,23 @@ def get_current_user(
         raise credentials_exception
 
     return user
+
+
+def user_can_access_business(db: Session, user, business_id: int) -> bool:
+    if not user or not business_id:
+        return False
+    if (getattr(user, "accesslevel", 0) or 0) >= 3:
+        return True
+    row = db.execute(
+        text(
+            "SELECT TOP 1 1 FROM BusinessAccess "
+            "WHERE BusinessID = :b AND PeopleID = :p AND ISNULL(Active, 1) = 1"
+        ),
+        {"b": int(business_id), "p": user.PeopleID},
+    ).first()
+    return row is not None
+
+
+def assert_business_access(db: Session, user, business_id: int):
+    if not user_can_access_business(db, user, business_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed for this business")
