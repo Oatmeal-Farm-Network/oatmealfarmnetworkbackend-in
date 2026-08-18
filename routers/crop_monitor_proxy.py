@@ -105,9 +105,13 @@ def _proxy_get_soft(path: str, params: dict | None = None, timeout: int | None =
         return None
 
 
-def _proxy_post_soft(path: str, json_body: dict | None = None) -> Optional[dict]:
+def _proxy_post_soft(path: str, json_body: dict | None = None, timeout: int | None = None) -> Optional[dict]:
     try:
-        r = requests.post(f"{CROP_MONITOR_URL}{path}", json=json_body or {}, timeout=_TIMEOUT_S)
+        r = requests.post(
+            f"{CROP_MONITOR_URL}{path}",
+            json=json_body or {},
+            timeout=timeout or _TIMEOUT_S,
+        )
         if not r.ok:
             return None
         try:
@@ -311,17 +315,13 @@ def run_field_analysis(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    """Trigger a fresh Sentinel analysis on CropMonitor."""
+    """Trigger Sentinel-2 analysis. CropMonitor first; Copernicus STAC if it is down."""
     _verify_field_access(db, user.PeopleID, field_id)
-    data = _proxy_post_soft(f"/api/fields/{field_id}/analyze")
-    if data is not None:
+    data = _proxy_post_soft(f"/api/fields/{field_id}/analyze", timeout=8)
+    if data is not None and (data.get("queued") or data.get("completed") or data.get("ok")):
         return data
-    return {
-        "message": "CropMonitor is not reachable from India backend yet. "
-                   "Analysis was not queued; contact ops to deploy crop-monitor-in.",
-        "queued": False,
-        "source": "local_fallback",
-    }
+    from routers import sentinel_analysis
+    return sentinel_analysis.run_for_field(db, field_id)
 
 
 @router.get("/fields/{field_id}/agronomy")
