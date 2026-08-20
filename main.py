@@ -17,6 +17,7 @@ from routers import climate_forecast
 from routers import field_assessment_report
 from routers import crop_monitor_proxy
 from routers import geocode
+from routers import bhuvan
 from routers import field_twin
 from routers import plant_knowledgebase
 from routers import crop_summary
@@ -551,6 +552,7 @@ app.include_router(csa_advanced.router, prefix="/api/fpo-advanced")
 app.include_router(forgot_password.router)
 app.include_router(weather.router)
 app.include_router(geocode.router)
+app.include_router(bhuvan.router)
 app.include_router(notes.router)
 app.include_router(crop_rotation.router)
 app.include_router(website_builder.router)
