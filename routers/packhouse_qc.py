@@ -2,7 +2,7 @@
 routers/packhouse_qc.py
 Packhouse sorting/grading/packaging workflows and QC inspection templates.
 """
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from database import blank_to_none
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -470,3 +470,57 @@ def export_batches_csv(business_id: int = Query(...), status: Optional[str] = No
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename=packhouse_batches_{business_id}.csv"},
     )
+
+
+@router.post("/cv-grade")
+async def cv_grade_photo(
+    business_id: int = Query(...),
+    file: UploadFile = File(...),
+):
+    """Computer-vision assist for packhouse grading (color uniformity + defect hints)."""
+    from io import BytesIO
+    try:
+        from PIL import Image, ImageStat
+    except ImportError:
+        raise HTTPException(502, "Pillow not installed for CV grading")
+
+    raw = await file.read()
+    if len(raw) > 8_000_000:
+        raise HTTPException(400, "Image too large (max 8 MB)")
+    try:
+        img = Image.open(BytesIO(raw)).convert("RGB")
+    except Exception:
+        raise HTTPException(400, "Invalid image file")
+
+    w, h = img.size
+    thumb = img.resize((min(256, w), min(256, h)))
+    stat = ImageStat.Stat(thumb)
+    r, g, b = stat.mean
+    std = sum(stat.stddev) / 3
+    green_ratio = g / max(r + g + b, 1)
+
+    # Heuristic defect proxy: high channel variance + low green for produce
+    defect_score = min(100, max(0, std * 1.8))
+    uniformity = max(0, min(100, 100 - std * 2.2))
+
+    if green_ratio > 0.38 and defect_score < 25:
+        grade, conf = "A", 0.78
+    elif green_ratio > 0.32 and defect_score < 40:
+        grade, conf = "B", 0.68
+    elif defect_score < 55:
+        grade, conf = "C", 0.58
+    else:
+        grade, conf = "reject", 0.72
+
+    return {
+        "suggested_grade": grade,
+        "confidence": round(conf, 2),
+        "metrics": {
+            "color_uniformity_pct": round(uniformity, 1),
+            "defect_hint_score": round(defect_score, 1),
+            "mean_rgb": [round(r, 1), round(g, 1), round(b, 1)],
+            "width": w,
+            "height": h,
+        },
+        "note": "CV assist v1 — officer should confirm grade. Not a food-safety certification.",
+    }
