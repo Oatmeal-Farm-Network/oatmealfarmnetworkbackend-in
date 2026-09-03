@@ -320,8 +320,99 @@ def run_field_analysis(
     data = _proxy_post_soft(f"/api/fields/{field_id}/analyze", timeout=8)
     if data is not None and (data.get("queued") or data.get("completed") or data.get("ok")):
         return data
+    import os
+    if (os.getenv("COMMODITY_MARKET") or os.getenv("OFN_STACK") or "india").lower() == "india":
+        from routers import india_crop_monitor
+        return india_crop_monitor.run_analysis(db, field_id)
     from routers import sentinel_analysis
     return sentinel_analysis.run_for_field(db, field_id)
+
+
+@router.get("/fields/{field_id}/crop-monitor")
+def get_crop_monitor_snapshot(
+    field_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """India crop monitoring: Bhuvan LULC primary + latest analysis."""
+    _verify_field_access(db, user.PeopleID, field_id)
+    from routers import india_crop_monitor
+    return india_crop_monitor.snapshot(db, field_id)
+
+
+@router.get("/fields/{field_id}/traceability-summary")
+def get_field_traceability_summary(
+    field_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Spray, harvest lots, and trace compliance rows for a field."""
+    business_id = _verify_field_access(db, user.PeopleID, field_id)
+    field = db.query(models.Field).filter(models.Field.FieldID == field_id).first()
+    field_name = getattr(field, "FieldName", None) or getattr(field, "Name", "") or ""
+
+    spray_rows: list = []
+    try:
+        spray_rows = db.execute(
+            text("""
+                SELECT TOP 20 ApplicationID AS id, ApplicationDate AS date,
+                       FieldName AS field_name, CropName AS crop,
+                       PestTargeted AS pest, PHIDate AS phi_date, IsComplete AS complete
+                  FROM SprayApplication
+                 WHERE BusinessID = :bid
+                   AND (FieldID = :fid OR FieldName = :fname)
+                 ORDER BY ApplicationDate DESC
+            """),
+            {"bid": business_id, "fid": field_id, "fname": field_name},
+        ).fetchall()
+    except Exception:
+        pass
+
+    lots: list = []
+    try:
+        lots = db.execute(
+            text("""
+                SELECT TOP 10 LotID AS lot_id, LotNumber AS lot_number,
+                       CropName AS crop, HarvestDate AS harvest_date,
+                       Quantity AS quantity, Unit AS unit, Status AS status
+                  FROM HarvestLot
+                 WHERE BusinessID = :bid AND FieldID = :fid
+                 ORDER BY HarvestDate DESC
+            """),
+            {"bid": business_id, "fid": field_id},
+        ).fetchall()
+    except Exception:
+        pass
+
+    compliance: list = []
+    try:
+        compliance = db.execute(
+            text("""
+                SELECT TOP 15 ComplianceID AS id, RecordType AS type,
+                       ProductName AS product, ApplicationDate AS date,
+                       FieldBlock AS field_block, WithholdingDays AS phi_days
+                  FROM TraceCompliance
+                 WHERE BusinessID = :bid
+                   AND (FieldBlock = :fname OR FieldBlock LIKE :like)
+                 ORDER BY ApplicationDate DESC
+            """),
+            {"bid": business_id, "fname": field_name, "like": f"%{field_name}%"},
+        ).fetchall()
+    except Exception:
+        pass
+
+    return {
+        "field_id": field_id,
+        "field_name": field_name,
+        "spray_applications": [dict(r._mapping) for r in spray_rows],
+        "harvest_lots": [dict(r._mapping) for r in lots],
+        "trace_compliance": [dict(r._mapping) for r in compliance],
+        "links": {
+            "spray_log": f"/spray-applications?BusinessID={business_id}",
+            "traceability": "/perishable-trace",
+            "packhouse": f"/packhouse?BusinessID={business_id}",
+        },
+    }
 
 
 @router.get("/fields/{field_id}/agronomy")

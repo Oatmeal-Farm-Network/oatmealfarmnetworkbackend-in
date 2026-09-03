@@ -355,7 +355,7 @@ def persist_analysis(db: Session, field: models.Field, computed: dict[str, Any])
         "cloud_percent": computed.get("cloud_percent"),
         "satellite_acquired_at": acquired,
         "vegetation_indices": vegetation,
-        "source": "copernicus-sentinel2",
+        "source": computed.get("source") or "copernicus-sentinel2",
     }
 
 

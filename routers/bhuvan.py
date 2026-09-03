@@ -106,12 +106,8 @@ def lulc_tile(z: int, x: int, y: int):
     )
 
 
-@router.get("/identify")
-def identify(
-    lon: float = Query(..., ge=68.0, le=98.0),
-    lat: float = Query(..., ge=6.0, le=37.0),
-):
-    """LULC class at lon/lat via Bhuvan GetFeatureInfo (JSON)."""
+def query_lulc_at(lon: float, lat: float) -> dict | None:
+    """Bhuvan GetFeatureInfo without raising HTTP errors (for internal use)."""
     d = 0.12
     status, body, _ = _bhuvan_get({
         "SERVICE": "WMS",
@@ -130,15 +126,34 @@ def identify(
         "FEATURE_COUNT": "5",
     })
     if status != 200:
-        raise HTTPException(status_code=502, detail="Bhuvan GetFeatureInfo failed")
+        return None
     text = body.decode("utf-8", errors="replace")
     klass = _parse_lulc_class(text)
+    if not klass:
+        return None
     return {
         "class_name": klass,
         "layer": BHUVAN_LAYER,
         "year_label": BHUVAN_YEAR,
         "source": "bhuvan-lulc-250k",
     }
+
+
+@router.get("/identify")
+def identify(
+    lon: float = Query(..., ge=68.0, le=98.0),
+    lat: float = Query(..., ge=6.0, le=37.0),
+):
+    """LULC class at lon/lat via Bhuvan GetFeatureInfo (JSON)."""
+    hit = query_lulc_at(lon, lat)
+    if not hit:
+        return {
+            "class_name": None,
+            "layer": BHUVAN_LAYER,
+            "year_label": BHUVAN_YEAR,
+            "source": "bhuvan-lulc-250k",
+        }
+    return hit
 
 
 @router.get("/legend.png")
